@@ -272,7 +272,7 @@ def clean_scores(scores):
     return scores
 
 
-def store_dataframe_to_synapse(df, parent, name, cols):
+def store_dataframe_to_synapse(syn, df, parent, name, cols):
     schema = sc.Schema(name = name, columns = cols, parent = parent)
     table = sc.Table(schema, df)
     table = syn.store(table)
@@ -318,13 +318,13 @@ def main():
             download_in_parallel = args.download_in_parallel)
 
     mc10_accelerometer = mc10_accelerometer.reset_index(drop=False).rename(
-            {"index": "task_id"})
+            {"index": "task_id"}, axis=1)
     mc10_gyroscope = mc10_gyroscope.reset_index(drop=False).rename(
-            {"index": "task_id"})
+            {"index": "task_id"}, axis=1)
     mc10_emg = mc10_emg.reset_index(drop=False).rename(
-            {"index": "task_id"})
+            {"index": "task_id"}, axis=1)
     smartwatch_accelerometer = smartwatch_accelerometer.reset_index(drop=False).rename(
-            {"index": "task_id"})
+            {"index": "task_id"}, axis=1)
 
     merged_mc10 = pd.DataFrame()
     if len(mc10_accelerometer) and len(mc10_gyroscope):
