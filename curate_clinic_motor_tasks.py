@@ -1,8 +1,14 @@
 '''
-Tidy and push table `SCORES` to Synapse as a Table object, but with additional
-columns `device` for device, `sensor_type` for sensor type, `sensor_location`
-for sensor location, and `sensor_data` containing the sensor measurements which
-correspond to the task being performed.
+Stores three tables to Synapse (under `TABLE_OUTPUT`):
+
+MC10 Sensor Measurements
+    columns task_id, sensor_location, mc10_accelerometer, mc10_gyroscope, mc10_emg
+Smartwatch Sensor Measurements
+    columns task_id, smartwatch_accelerometer
+Motor Task Timestamps and Scores
+    columns task_id, subject_id, visit, task, task_code, start_utc, stop_utc,
+            tremor_left, tremor_right, bradykinesia_left, bradykinesia_right,
+            dyskinesia_left, dyskinesia_right, overall, validated, side
 '''
 
 import os
@@ -14,14 +20,16 @@ import synapseclient as sc
 import synapseutils as su
 import pandas as pd
 
+TESTING = False
 SCORES = "syn18435302"
-MC10_MEASUREMENTS = "syn18822536" #"syn18435632"
-SMARTWATCH_MEASUREMENTS = "syn18822537" #"syn18435623"
+MC10_MEASUREMENTS = "syn18822536" if TESTING else "syn18435632"
+SMARTWATCH_MEASUREMENTS = "syn18822537" if TESTING else "syn18435623"
 SMARTWATCH_SENSOR_NAME = "smartwatch"
 MC10_SENSOR_NAME = "mc10"
-MC10_DATA_OUTPUT = "syn18879920" # "syn18879914"
-SMARTWATCH_DATA_OUTPUT = "syn18879977" # "syn18879976"
-TABLE_OUTPUT = "syn18407520"
+FRAC_TO_STORE = 0.02 if TESTING else 1
+MC10_DATA_OUTPUT =  "syn18879920" if TESTING else "syn18879914"
+SMARTWATCH_DATA_OUTPUT = "syn18879977" if TESTING else "syn18879976"
+TABLE_OUTPUT =  "syn11611056" if TESTING else "syn18407520"
 TASK_CODE_MAP = { # synchronize with MJFF Levodopa release
         "Drnkg": "drnkg",
         "Drwg": "drwg",
@@ -38,6 +46,22 @@ TASK_CODE_MAP = { # synchronize with MJFF Levodopa release
         "Typg": "typng",
         "Wlkg": "wlkgs",
         "WlkgCnt": "wlkgc"}
+SCORES_COL_MAP = {
+        "SubjID": "subject_id",
+        "Visit": "visit",
+        "Task": "task",
+        "TaskAbb": "task_code",
+        "Start Timestamp (UTC)": "start_utc",
+        "Stop Timestamp (UTC)": "stop_utc",
+        "Tremor - Left": "tremor_left",
+        "Tremor - Right": "tremor_right",
+        "Bradykinesia - Left": "bradykinesia_left",
+        "Bradykinesia - Right": "bradykinesia_right",
+        "Dyskinesia - Left": "dyskinesia_left",
+        "Dyskinesia - Right": "dyskinesia_right",
+        "Overall": "overall",
+        "Validated": "validated",
+        "Side": "side"}
 
 
 def read_args():
@@ -86,15 +110,6 @@ def find_relevant_scores(fname, scores, sensor):
             axis = 1)
     return scores[relevent_scores]
 
-def get_measurement_type(fname):
-    if fname.startswith("Table9A") or fname.startswith("Table8"):
-        return "accelerometer"
-    elif fname.startswith("Table9B"):
-        return "gyroscope"
-    elif fname.startwith("Table9C"):
-        return "emg"
-    else:
-        return None
 
 def new_data_column(syn, scores, col, parent, filtering_prefix, sensor,
                     download_in_parallel):
@@ -159,6 +174,8 @@ def slice_from_score(sensor_measurement, score, sensor):
             local_range = local_range.reset_index(drop=False)
             time_zero = local_range.Timestamp.iloc[0]
             local_range.Timestamp = local_range.Timestamp - time_zero
+            local_range.Timestamp = local_range.Timestamp.apply(
+                    lambda td : td.total_seconds())
             location = "_".join(location.split())
             result = result.append({"sensor_location": location,
                                     "sensor_data": local_range},
@@ -169,6 +186,8 @@ def slice_from_score(sensor_measurement, score, sensor):
         time_zero = local_range.Timestamp.iloc[0]
         time_end = local_range.Timestamp.iloc[-1]
         local_range.Timestamp = local_range.Timestamp - time_zero
+        local_range.Timestamp = local_range.Timestamp.apply(
+                lambda td : td.total_seconds())
         result = result.append({"sensor_location": None,
                                 "sensor_data": local_range},
                                ignore_index=True)
@@ -215,40 +234,9 @@ def replace_dataframe_with_filehandle(syn, df, parent):
         return ""
 
 
-def slice_files(score_rows, files):
-    for synapse_id, f in files.items():
-        slices = slice_sensor_measurement(f, score_rows[synapse_id])
-    return slices
-
-
-def filter_relevant_scores(sensor_measurement, scores):
-    start_time = sensor_measurement.index[0]
-    stop_time = sensor_measurement.index[-1]
-    subject_id = sensor_measurement.SubjID.iloc[0]
-    relevant_scores = scores.query(
-            "subject_id == @subject_id and "
-            "start_utc >= @start_time and "
-            "stop_utc <= @stop_time")
-    return relevant_scores
-
-
 def clean_scores(scores):
     # TODO: What to do with column `Side` and `Validated`?
-    scores = scores.rename({"SubjID": "subject_id",
-                            "Visit": "visit",
-                            "Task": "task",
-                            "TaskAbb": "task_code",
-                            "Start Timestamp (UTC)": "start_utc",
-                            "Stop Timestamp (UTC)": "stop_utc",
-                            "Tremor - Left": "tremor_left",
-                            "Tremor - Right": "tremor_right",
-                            "Bradykinesia - Left": "bradykinesia_left",
-                            "Bradykinesia - Right": "bradykinesia_right",
-                            "Dyskinesia - Left": "dyskinesia_left",
-                            "Dyskinesia - Right": "dyskinesia_right",
-                            "Overall": "overall",
-                            "Validated": "validated",
-                            "Side": "side"}, axis = 1)
+    scores = scores.rename(SCORES_COL_MAP, axis = 1)
     scores_subset = scores.loc[:,["subject_id", "start_utc", "stop_utc",
                                   "tremor_left", "tremor_right",
                                   "bradykinesia_left", "bradykinesia_right",
@@ -272,6 +260,35 @@ def clean_scores(scores):
     return scores
 
 
+def move_index_to_column(df):
+    df.reset_index(drop=False, inplace=True)
+    df.rename({"index": "task_id"}, axis=1, inplace=True)
+
+
+def create_cols(table_type, syn=None):
+    if table_type == MC10_SENSOR_NAME:
+        cols = [sc.Column(name="task_id", columnType="STRING"),
+                sc.Column(name="sensor_location", columnType="STRING"),
+                sc.Column(name="mc10_accelerometer", columnType="FILEHANDLEID"),
+                sc.Column(name="mc10_gyroscope", columnType="FILEHANDLEID"),
+                sc.Column(name="mc10_emg", columnType="FILEHANDLEID")]
+    elif table_type == SMARTWATCH_SENSOR_NAME:
+        cols = [sc.Column(name="task_id", columnType="STRING"),
+                sc.Column(name="smartwatch_accelerometer", columnType="FILEHANDLEID")]
+    elif table_type == "scores":
+        cols = list(syn.getTableColumns(SCORES))
+        for c in cols:
+            c.pop('id')
+            if c['name'] in SCORES_COL_MAP:
+                c['name'] = SCORES_COL_MAP[c['name']]
+        cols = [sc.Column(name="task_id",
+                          columnType="STRING")] + cols
+    else:
+        raise TypeError("table_type must be one of [{}, {}, {}]".format(
+            MC10_SENSOR_NAME, SMARTWATCH_SENSOR_NAME, "scores"))
+    return cols
+
+
 def store_dataframe_to_synapse(syn, df, parent, name, cols):
     schema = sc.Schema(name = name, columns = cols, parent = parent)
     table = sc.Table(schema, df)
@@ -284,6 +301,7 @@ def main():
     syn = sc.login()
     scores = clean_scores(read_syn_table(syn, SCORES))
 
+    # curate dataframes containing respective data measurements
     mc10_accelerometer = new_data_column(
             syn,
             scores = scores,
@@ -316,25 +334,26 @@ def main():
             filtering_prefix = "Table8",
             sensor = "smartwatch",
             download_in_parallel = args.download_in_parallel)
+    smartwatch_accelerometer = smartwatch_accelerometer.drop(
+            "sensor_location", axis=1)
 
-    mc10_accelerometer = mc10_accelerometer.reset_index(drop=False).rename(
-            {"index": "task_id"}, axis=1)
-    mc10_gyroscope = mc10_gyroscope.reset_index(drop=False).rename(
-            {"index": "task_id"}, axis=1)
-    mc10_emg = mc10_emg.reset_index(drop=False).rename(
-            {"index": "task_id"}, axis=1)
-    smartwatch_accelerometer = smartwatch_accelerometer.reset_index(drop=False).rename(
-            {"index": "task_id"}, axis=1)
+    # move task_id from index to column
+    for df in [mc10_accelerometer, mc10_gyroscope,
+               mc10_emg, smartwatch_accelerometer]:
+        move_index_to_column(df)
 
+    # combine mc10 measurements into a single file
     merged_mc10 = pd.DataFrame()
     if len(mc10_accelerometer) and len(mc10_gyroscope):
         merged_mc10 = mc10_accelerometer.merge(mc10_gyroscope, how="outer")
     if len(merged_mc10) and len(mc10_emg):
         merged_mc10 = merged_mc10.merge(mc10_emg, how="outer")
 
-    shuffled_mc10 = merged_mc10.sample(frac=1)
-    shuffled_smartwatch = smartwatch_accelerometer.sample(frac=1)
+    # shuffle records so that file handle integer contains no useful information
+    shuffled_mc10 = merged_mc10.sample(frac=FRAC_TO_STORE)
+    shuffled_smartwatch = smartwatch_accelerometer.sample(frac=FRAC_TO_STORE)
 
+    # replace the dataframes with file handles
     replace_cols_with_filehandles( # replaces in-place
             syn,
             df = shuffled_mc10,
@@ -348,20 +367,35 @@ def main():
             parent = SMARTWATCH_DATA_OUTPUT,
             upload_in_parallel = args.upload_in_parallel)
 
-    # shuffled_mc10 =
-    #shuffled_smartwatch = store_dataframe_to_synapse
+    # make the dataframes look pretty
+    shuffled_mc10.sort_values(["task_id", "sensor_location"], inplace=True)
+    shuffled_smartwatch.sort_values("task_id", inplace=True)
 
-    #store_dataframe_to_synapse(
+    # backup in case we just created a bajillion file handles but
+    # are rejected during table store
+    shuffled_mc10.to_csv("mc10_backup.csv", index=False)
+    shuffled_smartwatch.to_csv("smartwatch_backup.csv", index=False)
+    scores.to_csv("scores_backup.csv", index=False)
 
-
-    #smartwatch_rows, smartwatch_files = download_relevant_children(
-    #        syn, SMARTWATCH_MEASUREMENTS, scores,
-    #        args.download_in_parallel, sensor = SMARTWATCH_SENSOR_NAME)
-    #mc10_rows, mc10_files = download_relevant_children(
-    #        syn, MC_10_MEASUREMENTS, scores,
-    #        args.download_in_parallel, sensor = MC10_SENSOR_NAME)
-    #sliced_smartwatch_rows = slice_files(smartwatch_rows, smartwatch_files)
-    #sliced_mc10_rows = slice_files(mc10_rows, mc10_files)
+    # store to synapse
+    shuffled_mc10_table = store_dataframe_to_synapse(
+            syn,
+            df = shuffled_mc10,
+            parent = TABLE_OUTPUT,
+            name = "MC10 Sensor Measurements",
+            cols = create_cols(MC10_SENSOR_NAME))
+    shuffled_smartwatch_table = store_dataframe_to_synapse(
+            syn,
+            df = shuffled_smartwatch,
+            parent = TABLE_OUTPUT,
+            name = "Smartwatch Sensor Measurements",
+            cols = create_cols(SMARTWATCH_SENSOR_NAME))
+    scores_table = store_dataframe_to_synapse(
+            syn,
+            df = scores,
+            parent = TABLE_OUTPUT,
+            name = "Motor Task Timestamps and Scores",
+            cols = create_cols("scores", syn=syn))
 
 
 if __name__ == "__main__":
