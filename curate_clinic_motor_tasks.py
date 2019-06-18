@@ -27,8 +27,6 @@ SMARTWATCH_MEASUREMENTS = "syn18822537" if TESTING else "syn18435623"
 SMARTWATCH_SENSOR_NAME = "smartwatch"
 MC10_SENSOR_NAME = "mc10"
 FRAC_TO_STORE = 0.02 if TESTING else 1
-MC10_DATA_OUTPUT =  "syn18879920" if TESTING else "syn18879914"
-SMARTWATCH_DATA_OUTPUT = "syn18879977" if TESTING else "syn18879976"
 TABLE_OUTPUT =  "syn11611056" if TESTING else "syn18407520"
 TASK_CODE_MAP = { # synchronize with MJFF Levodopa release
         "Drnkg": "drnkg",
@@ -208,28 +206,28 @@ def slice_sensor_measurement(f, scores, relevant_task_ids, sensor):
     return(measurements)
 
 
-def replace_cols_with_filehandles(syn, df, cols, parent, upload_in_parallel):
+def replace_cols_with_filehandles(syn, df, cols, upload_in_parallel):
     if upload_in_parallel:
         mp = multiprocessing.dummy.Pool(4)
         for col in cols:
             df.loc[:,col] = list(mp.map(
-                    lambda df_ : replace_dataframe_with_filehandle(syn, df_, parent),
+                    lambda df_ : replace_dataframe_with_filehandle(syn, df_),
                     df[col]))
     else:
         for col in cols:
             df.loc[:,col] = list(map(
-                    lambda df_ : replace_dataframe_with_filehandle(syn, df_, parent),
+                    lambda df_ : replace_dataframe_with_filehandle(syn, df_),
                     df[col]))
 
 
-def replace_dataframe_with_filehandle(syn, df, parent):
+def replace_dataframe_with_filehandle(syn, df):
     if isinstance(df, pd.DataFrame):
         f = tempfile.NamedTemporaryFile(suffix=".csv")
         df.to_csv(f.name, index=False)
-        syn_f = sc.File(f.name, parent=parent, contentType="text/csv")
-        syn_f = syn.store(syn_f)
+        syn_f = syn.uploadSynapseManagedFileHandle(
+                f.name, mimetype="text/csv")
         f.close()
-        return syn_f["dataFileHandleId"]
+        return syn_f["id"]
     else:
         return ""
 
@@ -358,13 +356,11 @@ def main():
             syn,
             df = shuffled_mc10,
             cols = ["mc10_accelerometer", "mc10_gyroscope", "mc10_emg"],
-            parent = MC10_DATA_OUTPUT,
             upload_in_parallel = args.upload_in_parallel)
     replace_cols_with_filehandles( # replaces in-place
             syn,
             df = shuffled_smartwatch,
             cols = ["smartwatch_accelerometer"],
-            parent = SMARTWATCH_DATA_OUTPUT,
             upload_in_parallel = args.upload_in_parallel)
 
     # make the dataframes look pretty
