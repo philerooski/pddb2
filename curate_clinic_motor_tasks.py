@@ -59,7 +59,7 @@ SCORES_COL_MAP = {
         "Dyskinesia - Right": "dyskinesia_right",
         "Overall": "overall",
         "Validated": "validated",
-        "Side": "side"}
+        "Side": "smartwatch_side"}
 
 
 def read_args():
