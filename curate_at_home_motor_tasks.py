@@ -6,9 +6,11 @@ MC10 Home Sensor Measurements
     mc10_gyroscope, mc10_emg
 Smartwatch Home Sensor Measurements
     columns measurement_id, smartwatch_accelerometer
-Motor Task Home State Info
-    columns measurement_id, subject_id, start_utc, stop_utc, on_off,
-    tremor, dyskinesia, activity_intensity
+Motor Task Home Timestamps and Self-Reported Scores
+    columns measurement_id, subject_id, timestamp, on_off,
+    tremor, dyskinesia, activity_intensity, on_off_reported_timestamp,
+    tremor_reported_timestamp, dyskinesia_reported_timestamp,
+    activity_intensity_reported_timestamp
 '''
 
 import os
@@ -21,13 +23,13 @@ import synapseclient as sc
 import synapseutils as su
 import pandas as pd
 
-TESTING = True
+TESTING = False
 DIARY = "syn18435314"
 MC10_MEASUREMENTS = "syn18822536" if TESTING else "syn18435632"
 SMARTWATCH_MEASUREMENTS = "syn18822537" if TESTING else "syn18435623"
 SMARTWATCH_SENSOR_NAME = "smartwatch"
 MC10_SENSOR_NAME = "mc10"
-FRAC_TO_STORE = 0.02 if TESTING else 1
+FRAC_TO_STORE = 0.1 if TESTING else 1
 TABLE_OUTPUT = "syn11611056" if TESTING else "syn18407520"
 DIARY_COL_MAP = {
         "SubjID": "subject_id",
@@ -167,7 +169,7 @@ def slice_from_diary(sensor_measurement, diary_entry, sensor):
         result = result.append({"sensor_location": None,
                                 "sensor_data": local_range},
                                ignore_index=True)
-    #result.index = pd.Index([score.name] * len(result))
+    result.index = pd.Index([diary_entry.measurement_id] * len(result))
     return result
 
 
@@ -176,7 +178,7 @@ def slice_sensor_measurement(f, diary, relevant_measurement_ids, sensor):
     sensor_measurement.Timestamp = pd.to_datetime(sensor_measurement.Timestamp)
     sensor_measurement.set_index("Timestamp", drop=True, inplace=True)
     sensor_measurement.sort_index(inplace=True)
-    relevant_diary_entries = diary.loc[relevant_measurement_ids,["timestamp"]]
+    relevant_diary_entries = diary.loc[relevant_measurement_ids]
     measurements = relevant_diary_entries.apply(
             lambda diary_entry : slice_from_diary(sensor_measurement, diary_entry, sensor),
             axis = 1)
@@ -217,27 +219,35 @@ def read_diary(syn):
     diary.reported_timestamp = pd.to_datetime(diary.reported_timestamp)
     diary = diary.sort_values(
             ["subject_id", "timestamp", "measurement", "reported_timestamp"])
-    diary = diary.drop_duplicates(
+    diary = diary.drop_duplicates( # only keep most recently inputted metric value
             ["subject_id", "timestamp", "measurement"], keep="last")
     grouped_diary = diary.groupby(["subject_id", "timestamp"])
     def assign_measurement_id(group):
         group["measurement_id"] = str(uuid.uuid4())
         return group
     diary_with_id = grouped_diary.apply(assign_measurement_id)
-    reshaped_diary = diary_with_id.pivot(
+    reshaped_diary_measurements = diary_with_id.pivot(
             index="measurement_id", columns="measurement", values="value")
+    reshaped_diary_reported_timestamp = diary_with_id.pivot(
+            index="measurement_id", columns="measurement", values="reported_timestamp")
     diary_with_id_col_subset = diary_with_id.drop(
             ["measurement", "value", "reported_timestamp"], axis=1)
     diary_with_id_col_subset = diary_with_id_col_subset.set_index(
             "measurement_id", drop=False)
     diary_with_id_col_subset = diary_with_id_col_subset.drop_duplicates(
             ["subject_id", "timestamp"])
-    final_diary = diary_with_id_col_subset.join(reshaped_diary)
-    final_diary = final_diary.rename({
+    reshaped_diary_measurements = reshaped_diary_measurements.rename({
         "Activity Intensity": "activity_intensity",
         "Dyskinesia": "dyskinesia",
         "On/Off": "on_off",
         "Tremor": "tremor"}, axis=1)
+    reshaped_diary_reported_timestamp = reshaped_diary_reported_timestamp.rename({
+        "Activity Intensity": "activity_intensity_reported_timestamp",
+        "Dyskinesia": "dyskinesia_reported_timestamp",
+        "On/Off": "on_off_reported_timestamp",
+        "Tremor": "tremor_reported_timestamp"}, axis=1)
+    final_diary = diary_with_id_col_subset.join(reshaped_diary_measurements)
+    final_diary = final_diary.join(reshaped_diary_reported_timestamp)
     return(final_diary)
 
 
@@ -256,21 +266,27 @@ def create_cols(table_type, syn=None):
     elif table_type == SMARTWATCH_SENSOR_NAME:
         cols = [sc.Column(name="measurement_id", columnType="STRING"),
                 sc.Column(name="smartwatch_accelerometer", columnType="FILEHANDLEID")]
-    elif table_type == "scores":
-        cols = list(syn.getTableColumns(SCORES))
-        for c in cols:
-            c.pop('id')
-            if c['name'] in SCORES_COL_MAP:
-                c['name'] = SCORES_COL_MAP[c['name']]
-        cols = [sc.Column(name="measurement_id",
-                          columnType="STRING")] + cols
+    elif table_type == "diary":
+        cols = list(syn.getTableColumns(DIARY))
+        cols = [sc.Column(name="measurement_id", columnType="STRING"),
+                sc.Column(name="subject_id", columnType="INTEGER"),
+                sc.Column(name="timestamp", columnType="DATE"),
+                sc.Column(name="activity_intensity", columnType="INTEGER"),
+                sc.Column(name="dyskinesia", columnType="INTEGER"),
+                sc.Column(name="on_off", columnType="INTEGER"),
+                sc.Column(name="tremor", columnType="INTEGER"),
+                sc.Column(name="activity_intensity_reported_timestamp", columnType="DATE"),
+                sc.Column(name="dyskinesia_reported_timestamp", columnType="DATE"),
+                sc.Column(name="on_off_reported_timestamp", columnType="DATE"),
+                sc.Column(name="tremor_reported_timestamp", columnType="DATE")]
     else:
         raise TypeError("table_type must be one of [{}, {}, {}]".format(
-            MC10_SENSOR_NAME, SMARTWATCH_SENSOR_NAME, "scores"))
+            MC10_SENSOR_NAME, SMARTWATCH_SENSOR_NAME, "diary"))
     return cols
 
 
 def store_dataframe_to_synapse(syn, df, parent, name, cols):
+    df = df[[c['name'] for c in cols]]
     schema = sc.Schema(name = name, columns = cols, parent = parent)
     table = sc.Table(schema, df)
     table = syn.store(table)
@@ -354,7 +370,7 @@ def main():
     # are rejected during table store
     shuffled_mc10.to_csv("mc10_backup.csv", index=False)
     shuffled_smartwatch.to_csv("smartwatch_backup.csv", index=False)
-    scores.to_csv("scores_backup.csv", index=False)
+    diary.to_csv("diary_backup.csv", index=False)
 
     # store to synapse
     shuffled_mc10_table = store_dataframe_to_synapse(
@@ -369,12 +385,12 @@ def main():
             parent = TABLE_OUTPUT,
             name = "Smartwatch Home Sensor Measurements",
             cols = create_cols(SMARTWATCH_SENSOR_NAME))
-    scores_table = store_dataframe_to_synapse(
+    diary_table = store_dataframe_to_synapse(
             syn,
-            df = scores,
+            df = diary,
             parent = TABLE_OUTPUT,
-            name = "Motor Task Home Timestamps and Scores",
-            cols = create_cols("scores", syn=syn))
+            name = "Motor Task Home Timestamps and Self-Reported Scores",
+            cols = create_cols("diary", syn=syn))
 
 
 if __name__ == "__main__":
