@@ -105,4 +105,4 @@ main <- function() {
   store_features(features, args$outputParent)
 }
 
-#main()
+main()
