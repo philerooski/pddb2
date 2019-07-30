@@ -41,13 +41,17 @@ load_input_table <- function(input_table, accelerometer_column, gyroscope_column
     accel_data <- synDownloadTableColumns(input_table_q, accelerometer_column)
     accel_table <- tibble(!!accelerometer_column := names(accel_data),
                           accelerometer = accel_data)
-    input_table <- left_join(input_table, accel_table)
+    input_table <- input_table %>%
+        left_join(accel_table) %>%
+        mutate(gyroscope = NA)
   }
   if (!is.null(gyroscope_column)) {
     gyro_data <- synDownloadTableColumns(input_table_q, gyroscope_column)
     gyro_table <- tibble(!!gyroscope_column := names(gyro_data),
                           gyroscope = gyro_data)
-    input_table <- left_join(input_table, gyro_table)
+    input_table <- input_table %>%
+        left_join(gyro_table) %>%
+        mutate(accelerometer = NA)
   }
   return(input_table)
 }
@@ -102,7 +106,6 @@ store_features <- function(features, parent) {
 main <- function() {
   synLogin()
   args <- read_args()
-  print(args$gyroscopeColumn)
   input_table <- load_input_table(input_table = args$inputTable,
                                   accelerometer_column = args$accelerometerColumn,
                                   gyroscope_column = args$gyroscopeColumn)
