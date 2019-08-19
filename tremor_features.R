@@ -42,16 +42,20 @@ load_input_table <- function(input_table, accelerometer_column, gyroscope_column
     accel_table <- tibble(!!accelerometer_column := names(accel_data),
                           accelerometer = accel_data)
     input_table <- input_table %>%
-        left_join(accel_table) %>%
-        mutate(gyroscope = NA)
+        left_join(accel_table)
+  } else {
+    input_table <- input_table %>%
+      mutate(accelerometer = NA)
   }
   if (!is.null(gyroscope_column)) {
     gyro_data <- synDownloadTableColumns(input_table_q, gyroscope_column)
     gyro_table <- tibble(!!gyroscope_column := names(gyro_data),
                           gyroscope = gyro_data)
     input_table <- input_table %>%
-        left_join(gyro_table) %>%
-        mutate(accelerometer = NA)
+        left_join(gyro_table)
+  } else {
+    input_table <- input_table %>%
+      mutate(gyroscope = NA)
   }
   return(input_table)
 }
@@ -61,7 +65,6 @@ map_features <- function(measurement_id, sensor_location, accelerometer, gyrosco
   gyro_data <- read_sensor_data(gyroscope)
   sampling_rate <- mhealthtools:::get_sampling_rate(accel_data)
   window_length <- as.integer(60*sampling_rate) # one-minute long windows
-  # TODO error handling
   tremor_features <- mhealthtools::get_tremor_features(
     accel_data, gyro_data, window_length=window_length, window_overlap=0,
     derived_kinematics=T, detrend=T, frequency_filter = c(1, 25))
