@@ -17,6 +17,7 @@ read_args <- function() {
                        help="Synapse ID of the output's parent.")
   parser <- add_option(parser, "--parallel", action="store_true", default=FALSE,
                        help="Extract features in parallel.")
+  parser <- add_option(parser, "--cacheDir", help="Store intermediate results.")
   parse_args(parser)
 }
 
@@ -60,7 +61,8 @@ load_input_table <- function(input_table, accelerometer_column, gyroscope_column
   return(input_table)
 }
 
-map_features <- function(measurement_id, sensor_location, accelerometer, gyroscope) {
+map_features <- function(measurement_id, sensor_location, accelerometer,
+                         gyroscope, intermediary_location) {
   accel_data <- read_sensor_data(accelerometer)
   gyro_data <- read_sensor_data(gyroscope)
   sampling_rate <- mhealthtools:::get_sampling_rate(accel_data)
@@ -77,10 +79,14 @@ map_features <- function(measurement_id, sensor_location, accelerometer, gyrosco
   tremor_features$sensor_location <- sensor_location
   tremor_features <- tremor_features %>%
     select(measurement_id, sensor_location, dplyr::everything())
+  if (!is.null(intermediary_location)) {
+    readr::write_tsv(tremor_features,
+                     file.path(intermediary_location, paste0(measurement_id, ".tsv")))
+  }
   return(tremor_features)
 }
 
-extract_features <- function(input_table, parallel) {
+extract_features <- function(input_table, parallel, intermediary_location) {
   if (parallel) {
     plan(multiprocess)
   }
@@ -88,7 +94,8 @@ extract_features <- function(input_table, parallel) {
     input_table$sensor_location <- NA
   }
   relevant_input_table <- input_table %>%
-    select(measurement_id, sensor_location, accelerometer, gyroscope)
+    select(measurement_id, sensor_location, accelerometer, gyroscope) %>%
+    mutate(intermediary_location = intermediary_location)
   features <- furrr::future_pmap_dfr(
     relevant_input_table, map_features, .progress = TRUE)
   return(features)
@@ -112,7 +119,7 @@ main <- function() {
   input_table <- load_input_table(input_table = args$inputTable,
                                   accelerometer_column = args$accelerometerColumn,
                                   gyroscope_column = args$gyroscopeColumn)
-  features <- extract_features(input_table, args$parallel)
+  features <- extract_features(input_table, args$parallel, args$cacheDir)
   store_features(features, args$outputParent)
 }
 
