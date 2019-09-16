@@ -47,8 +47,8 @@ fetch_sensor_data <- function() {
     "(measurement = 'gyroscope' OR measurement = 'accelerometer')"))
   sensor_data <- sensor_data_q$asDataFrame() %>%
     as_tibble() %>%
-    select(id, subject_id, context, device, measurement) %>%
-    mutate(path = synGet(id)$path)
+    select(id, subject_id, context, device, measurement)
+  sensor_data$path <- purrr::map(sensor_data$id, ~ synGet(.)$path)
   return(sensor_data)
 }
 
