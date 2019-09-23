@@ -35,7 +35,7 @@ read_sensor_data <- function(p) {
 }
 
 load_input_table <- function(input_table, accelerometer_column, gyroscope_column) {
-  input_table_q <- synTableQuery(paste("select * from", input_table, "LIMIT 20"))
+  input_table_q <- synTableQuery(paste("select * from", input_table))
   input_table <- input_table_q$asDataFrame() %>%
     as_tibble() %>%
     select(-ROW_ID, -ROW_VERSION)
