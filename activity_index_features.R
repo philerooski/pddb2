@@ -35,7 +35,7 @@ read_sensor_data <- function(p) {
 }
 
 load_input_table <- function(input_table, accelerometer_column, gyroscope_column) {
-  input_table_q <- synTableQuery(paste("select * from", input_table))
+  input_table_q <- synTableQuery(paste("select * from", input_table, "LIMIT 20"))
   input_table <- input_table_q$asDataFrame() %>%
     as_tibble() %>%
     select(-ROW_ID, -ROW_VERSION)
@@ -76,16 +76,25 @@ activity_index <- function(df, sigma0, epoch, sampling_rate = NULL) {
 }
 
 map_features <- function(measurement_id, sensor_location, accelerometer, gyroscope) {
-  accel_data <- read_sensor_data(accelerometer)
-  gyro_data <- read_sensor_data(gyroscope)
-  sampling_rate <- ceiling(mhealthtools:::get_sampling_rate(accel_data))
-  activity_index_features <- activity_index(
-    df = accel_data, sigma0 = SIGMA_0, epoch = 60, sampling_rate = sampling_rate)
-  activity_index_features$measurement_id <- measurement_id
-  activity_index_features$sensor_location <- sensor_location
-  activity_index_features$minute <- 1:nrow(activity_index_features)
-  activity_index_features <- activity_index_features %>%
-    select(measurement_id, sensor_location, t = RecordNo, minute, AI)
+  activity_index_features <- tryCatch({
+    accel_data <- read_sensor_data(accelerometer)
+    gyro_data <- read_sensor_data(gyroscope)
+    sampling_rate <- ceiling(mhealthtools:::get_sampling_rate(accel_data))
+    activity_index_features <- activity_index(
+      df = accel_data, sigma0 = SIGMA_0, epoch = 60, sampling_rate = sampling_rate)
+    activity_index_features$measurement_id <- measurement_id
+    activity_index_features$sensor_location <- sensor_location
+    activity_index_features$window <- 1:nrow(activity_index_features)
+    activity_index_features <- activity_index_features %>%
+      select(measurement_id, sensor_location, window, window_start_time = RecordNo, AI)
+  }, error = function(e) {
+    activity_index_features <- tibble(measurement_id = measurement_id,
+                                      sensor_location = sensor_location,
+                                      window = NA,
+                                      window_start_time = NA,
+                                      AI = NA,
+                                      error = e$message)
+  })
   return(activity_index_features)
 }
 
