@@ -1,7 +1,8 @@
 library(synapser)
 library(tidyverse)
+library(furrr)
 
-TESTING = TRUE
+TESTING = FALSE
 DIARY = "syn20769648"
 SENSOR_START_TIMES <- "syn20712822"
 SENSOR_DATA <- "syn20542701"
@@ -80,49 +81,61 @@ fetch_sensor_data <- function() {
 }
 
 slice_sensor_data <- function(sensor_data, diary) {
-  sliced_data <- purrr::pmap_dfr(sensor_data, function(subject_id, context, device,
+  sliced_data <- furrr::future_pmap_dfr(sensor_data, function(subject_id, context, device,
                                                     measurement, path, first_time,
                                                     last_time) {
-    sensor_data_df <- read_csv(path) %>%
-      filter(!duplicated(time)) %>%
-      mutate(actual_time = first_time + lubridate::seconds(time)) %>%
-      arrange(time)
-    names(sensor_data_df) <- c("t", "x", "y", "z", "actual_time")
-    last_time <- sensor_data_df$actual_time[[nrow(sensor_data_df)]]
-    relevant_diary <- diary %>%
-      distinct(measurement_id, diary_subject_id, diary_start_timestamp, diary_end_timestamp) %>%
-      arrange(diary_start_timestamp) %>%
-      filter(diary_start_timestamp >= first_time - lubridate::minutes(5),
-             diary_end_timestamp <= last_time + lubridate::minutes(5),
-             diary_subject_id == subject_id)
-    if (nrow(relevant_diary)) {
-      slices <- purrr::pmap(relevant_diary, function(measurement_id, diary_subject_id,
-                                                     diary_start_timestamp, diary_end_timestamp) {
-        slice <- sensor_data_df %>%
-          filter(actual_time >= diary_start_timestamp + lubridate::minutes(5),
-                 actual_time <= diary_end_timestamp - lubridate::minutes(5))
-          if (nrow(slice)) {
-            slice <- slice %>%
-              mutate(measurement_id = measurement_id,
-                     t = t - t[[1]]) %>% # write function to solve floating point error
-              select(measurement_id, dplyr::everything(), -actual_time)
-          }
-          return(slice)
-      })
+    relevant_slices <- tryCatch({
+      sensor_data_df <- read_csv(path) %>%
+        filter(!duplicated(time)) %>%
+        mutate(actual_time = first_time + lubridate::seconds(time)) %>%
+        arrange(time)
+      names(sensor_data_df) <- c("t", "x", "y", "z", "actual_time")
+      last_time <- sensor_data_df$actual_time[[nrow(sensor_data_df)]]
+      relevant_diary <- diary %>%
+        distinct(measurement_id, diary_subject_id, diary_start_timestamp, diary_end_timestamp) %>%
+        arrange(diary_start_timestamp) %>%
+        filter(diary_start_timestamp >= first_time - lubridate::minutes(5),
+               diary_end_timestamp <= last_time + lubridate::minutes(5),
+               diary_subject_id == subject_id)
+      if (nrow(relevant_diary)) {
+        slices <- purrr::pmap(relevant_diary, function(measurement_id, diary_subject_id,
+                                                       diary_start_timestamp, diary_end_timestamp) {
+          slice <- sensor_data_df %>%
+            filter(actual_time >= diary_start_timestamp + lubridate::minutes(5),
+                   actual_time <= diary_end_timestamp - lubridate::minutes(5))
+            if (nrow(slice)) {
+              slice <- slice %>%
+                mutate(measurement_id = measurement_id,
+                       t = round(t - t[[1]], 3)) %>%
+                select(measurement_id, dplyr::everything(), -actual_time)
+            }
+            return(slice)
+        })
+        relevant_slices <- tibble(
+          subject_id = subject_id,
+          context = context,
+          device = device,
+          measurement = measurement,
+          data = slices) %>%
+          filter(purrr::map(data, nrow) > 0) %>%
+          mutate(measurement_id = unlist(purrr::map(data, ~ .$measurement_id[[1]])),
+                 data = purrr::map(data, ~ select(., t, x, y, z))) %>%
+          select(measurement_id, subject_id, context, device, measurement, data)
+        return(relevant_slices)
+      } else {
+        return(tibble())
+      }
+    }, error = function(e) {
       relevant_slices <- tibble(
         subject_id = subject_id,
         context = context,
         device = device,
         measurement = measurement,
-        data = slices) %>%
-        filter(purrr::map(data, nrow) > 0) %>%
-        mutate(measurement_id = unlist(purrr::map(data, ~ .$measurement_id[[1]])),
-               data = purrr::map(data, ~ select(., t, x, y, z))) %>%
-        select(measurement_id, subject_id, context, device, measurement, data)
+        data = NA,
+        error = e$message)
       return(relevant_slices)
-    } else {
-      return(tibble())
-    }
+    })
+    return(relevant_slices)
   })
   return(sliced_data)
 }
@@ -162,7 +175,7 @@ store_sliced_data_and_diary <- function(sliced_data, diary, parent) {
     Column(name = "data_file_handle_id", columnType = "FILEHANDLEID"))
   data_schema <- Schema(name = "REAL PD Accelerometer and Gyroscope Data", parent = parent,
                         columns = data_cols)
-  data_table <- Table(data_schema, data_fname)
+  data_table <- Table(data_schema, data_df)
   synStore(data_table)
   diary_fname <- "real_pd_diary.csv"
   write_csv(diary, diary_fname)
@@ -178,7 +191,7 @@ store_sliced_data_and_diary <- function(sliced_data, diary, parent) {
     Column(name = "tremor", columnType = "INTEGER"))
   diary_schema <- Schema(name = "REAL PD Self-Reported Scores", parent = parent,
                         columns = diary_cols)
-  diary_table <- Table(diary_schema, diary_fname)
+  diary_table <- Table(diary_schema, diary)
   synStore(diary_table)
 }
 
@@ -189,6 +202,7 @@ main <- function() {
   sensor_data <- fetch_sensor_data() %>%
     inner_join(start_times, by = c("subject_id", "device", "measurement")) %>%
     select(-id)
+  plan(multiprocess, workers = 3)
   sliced_data <- slice_sensor_data(sensor_data, diary)
   store_sliced_data_and_diary(sliced_data, diary, parent = OUTPUT_PROJECT)
 }
