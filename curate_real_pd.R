@@ -1,9 +1,11 @@
 library(synapser)
 library(tidyverse)
 
+TESTING = TRUE
 DIARY = "syn20769648"
 SENSOR_START_TIMES <- "syn20712822"
 SENSOR_DATA <- "syn20542701"
+OUTPUT_PROJECT <- if (TESTING) "syn11611056" else "syn18407520"
 
 fetch_diary <- function() {
   diary_raw <- read_delim(synGet(DIARY)$path, delim=";") %>%
@@ -23,12 +25,21 @@ fetch_diary <- function() {
              sep = "_", extra = "merge") %>%
     mutate(start_time = hms::as_hms(paste0(start_time, ":00")),
            end_time = hms::as_hms(paste0(end_time, ":00")),
-           diary_start_time = diary_date + start_time,
-           diary_end_time = diary_date + end_time) %>%
+           diary_start_timestamp = diary_date + start_time,
+           diary_end_timestamp = diary_date + end_time) %>%
     filter(!is.na(diary_date),
-           diary_date < lubridate::today()) %>%
-    select(diary_subject_id, reported_timestamp, diary_start_time,
-           diary_end_time, measurement, value)
+           diary_date < lubridate::today())
+    diary_raw$measurement <- dplyr::recode(
+      diary_raw$measurement,
+      Medication_state = "medication_state",
+      Slowness_walking = "slowness_walking",
+      Tremor = "tremor",
+      Main_activities = "main_activities")
+    diary_raw <- diary_raw %>%
+      pivot_wider(names_from = measurement, values_from = value) %>%
+      mutate(measurement_id = unlist(lapply(1:nrow(.), uuid::UUIDgenerate))) %>%
+      select(measurement_id, diary_subject_id, reported_timestamp, diary_start_timestamp,
+           diary_end_timestamp, medication_state, slowness_walking, tremor)
   return(diary_raw)
 }
 
@@ -55,7 +66,7 @@ fetch_sensor_data <- function() {
     "(device = 'Smartwatch' OR device = 'Smartphone')",
     "AND",
     "(measurement = 'gyroscope' OR measurement = 'accelerometer')",
-    "LIMIT 2 OFFSET 2"))
+    {if (TESTING) "LIMIT 2 OFFSET 2" else ""}))
   sensor_data <- as_tibble(sensor_data_q$asDataFrame())
   # Fortunately, everything with a matching md5 has matching identifying metadata
   # except in the case where the data file is empty except for column names
@@ -73,28 +84,28 @@ slice_sensor_data <- function(sensor_data, diary) {
                                                     measurement, path, first_time,
                                                     last_time) {
     sensor_data_df <- read_csv(path) %>%
+      filter(!duplicated(time)) %>%
       mutate(actual_time = first_time + lubridate::seconds(time)) %>%
       arrange(time)
     names(sensor_data_df) <- c("t", "x", "y", "z", "actual_time")
     last_time <- sensor_data_df$actual_time[[nrow(sensor_data_df)]]
     relevant_diary <- diary %>%
-      distinct(diary_subject_id, diary_start_time, diary_end_time) %>%
-      arrange(diary_start_time) %>%
-      filter(diary_start_time >= first_time - lubridate::minutes(5),
-             diary_end_time <= last_time + lubridate::minutes(5),
+      distinct(measurement_id, diary_subject_id, diary_start_timestamp, diary_end_timestamp) %>%
+      arrange(diary_start_timestamp) %>%
+      filter(diary_start_timestamp >= first_time - lubridate::minutes(5),
+             diary_end_timestamp <= last_time + lubridate::minutes(5),
              diary_subject_id == subject_id)
     if (nrow(relevant_diary)) {
-      slices <- purrr::pmap(relevant_diary, function(diary_subject_id,
-                                                     diary_start_time, diary_end_time) {
+      slices <- purrr::pmap(relevant_diary, function(measurement_id, diary_subject_id,
+                                                     diary_start_timestamp, diary_end_timestamp) {
         slice <- sensor_data_df %>%
-          filter(actual_time >= diary_start_time + lubridate::minutes(5),
-                 actual_time <= diary_end_time - lubridate::minutes(5))
+          filter(actual_time >= diary_start_timestamp + lubridate::minutes(5),
+                 actual_time <= diary_end_timestamp - lubridate::minutes(5))
           if (nrow(slice)) {
             slice <- slice %>%
-              mutate(t = t - t[[1]],
-                     diary_start_timestamp = diary_start_time,
-                     diary_end_timestamp = diary_end_time) %>%
-              select(-actual_time)
+              mutate(measurement_id = measurement_id,
+                     t = t - t[[1]]) %>% # write function to solve floating point error
+              select(measurement_id, dplyr::everything(), -actual_time)
           }
           return(slice)
       })
@@ -105,25 +116,14 @@ slice_sensor_data <- function(sensor_data, diary) {
         measurement = measurement,
         data = slices) %>%
         filter(purrr::map(data, nrow) > 0) %>%
-        mutate(diary_start_timestamp = unlist(
-          purrr::map(slices, ~ .$diary_start_timestamp[[1]])),
-          diary_end_timestamp = unlist(
-            purrr::map(slices, ~ .$diary_end_timestamp[[1]])),
-          diary_start_timestamp = lubridate::as_datetime(
-            diary_start_timestamp, tz = "Europe/Amsterdam"),
-          diary_end_timestamp = lubridate::as_datetime(
-            diary_end_timestamp, tz = "Europe/Amsterdam"),
-          data = purrr::map(data, ~ select(., t, x, y, z))) %>%
-        select(subject_id, context, device, measurement,
-               diary_start_timestamp, diary_end_timestamp, data)
+        mutate(measurement_id = unlist(purrr::map(data, ~ .$measurement_id[[1]])),
+               data = purrr::map(data, ~ select(., t, x, y, z))) %>%
+        select(measurement_id, subject_id, context, device, measurement, data)
       return(relevant_slices)
     } else {
       return(tibble())
     }
   })
-  sliced_data <- sliced_data %>%
-    mutate(measurement_id = unlist(purrr::map(1:nrow(sliced_data), uuid::UUIDgenerate))) %>%
-    select(measurement_id, dplyr::everything())
   return(sliced_data)
 }
 
@@ -139,14 +139,47 @@ replace_df_with_filehandles <- function(list_of_df) {
   return(file_handles)
 }
 
-store_sliced_data <- function(sliced_data) {
-  data_df <- select(sliced_data, measurement_id, data)
-  diary_df <- select(sliced_data, -data)
+store_sliced_data_and_diary <- function(sliced_data, diary, parent) {
+  context <- sliced_data %>%
+    distinct(measurement_id, context)
+  diary <- diary %>%
+    left_join(context, by = "measurement_id") %>%
+    select(measurement_id, subject_id = diary_subject_id, context, dplyr::everything())
+  data_df <- sliced_data %>%
+    select(measurement_id, subject_id, device, measurement, data)
   data_df <- data_df %>%
     sample_frac(1) %>%
     mutate(data_file_handle_id = replace_df_with_filehandles(data)) %>%
     select(-data) %>%
-    arrange(measurement_id)
+    arrange(subject_id, device, measurement, measurement_id)
+  data_fname <- "real_pd_sensor_data.csv"
+  write_csv(data_df, data_fname)
+  data_cols <- list(
+    Column(name = "measurement_id", columnType = "STRING", maximumSize="36"),
+    Column(name = "subject_id", columnType = "STRING", maximumSize="36"),
+    Column(name = "device", columnType = "STRING", maximumSize="36"),
+    Column(name = "measurement", columnType = "STRING", maximumSize="36"),
+    Column(name = "data_file_handle_id", columnType = "FILEHANDLEID"))
+  data_schema <- Schema(name = "REAL PD Accelerometer and Gyroscope Data", parent = parent,
+                        columns = data_cols)
+  data_table <- Table(data_schema, data_fname)
+  synStore(data_table)
+  diary_fname <- "real_pd_diary.csv"
+  write_csv(diary, diary_fname)
+  diary_cols <- list(
+    Column(name = "measurement_id", columnType = "STRING", maximumSize="36"),
+    Column(name = "subject_id", columnType = "STRING", maximumSize="36"),
+    Column(name = "context", columnType = "STRING", maximumSize="36"),
+    Column(name = "reported_timestamp", columnType = "DATE"),
+    Column(name = "diary_start_timestamp", columnType = "DATE"),
+    Column(name = "diary_end_timestamp", columnType = "DATE"),
+    Column(name = "medication_state", columnType = "INTEGER"),
+    Column(name = "slowness_walking", columnType = "INTEGER"),
+    Column(name = "tremor", columnType = "INTEGER"))
+  diary_schema <- Schema(name = "REAL PD Self-Reported Scores", parent = parent,
+                        columns = diary_cols)
+  diary_table <- Table(diary_schema, diary_fname)
+  synStore(diary_table)
 }
 
 main <- function() {
@@ -157,7 +190,7 @@ main <- function() {
     inner_join(start_times, by = c("subject_id", "device", "measurement")) %>%
     select(-id)
   sliced_data <- slice_sensor_data(sensor_data, diary)
-  store_sliced_data(sliced_data)
+  store_sliced_data_and_diary(sliced_data, diary, parent = OUTPUT_PROJECT)
 }
 
-#main()
+main()
