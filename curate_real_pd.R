@@ -3,6 +3,7 @@ library(tidyverse)
 library(furrr)
 
 TESTING = FALSE
+PARALLEL_WORKERS = 6
 CACHE_DIR = if (TESTING) "cache" else "/root/cache"
 DIARY = "syn20769648"
 SENSOR_START_TIMES <- "syn20712822"
@@ -120,14 +121,16 @@ slice_sensor_data <- function(sensor_data, diary) {
           data = slices) %>%
           filter(purrr::map(data, nrow) > 0) %>%
           mutate(measurement_id = unlist(purrr::map(data, ~ .$measurement_id[[1]])),
-                 data = purrr::map(data, function(df) {
+                 path = purrr::map(data, function(df) {
                    fname = tempfile(tmpdir = CACHE_DIR, fileext = ".csv")
                    df <- df %>%
                      select(t, x, y, z) %>%
                      write_csv(fname)
                    return(fname)
                  })) %>%
-          select(measurement_id, subject_id, context, device, measurement, data)
+          select(measurement_id, subject_id, context, device, measurement, path)
+        rm(sensor_data_df)
+        rm(slices)
         return(relevant_slices)
       } else {
         return(tibble())
@@ -138,7 +141,7 @@ slice_sensor_data <- function(sensor_data, diary) {
         context = context,
         device = device,
         measurement = measurement,
-        data = NA,
+        path = NA,
         error = e$message)
       return(relevant_slices)
     })
@@ -167,8 +170,8 @@ store_sliced_data_and_diary <- function(sliced_data, diary, parent) {
     select(measurement_id, subject_id, device, measurement, data)
   data_df <- data_df %>%
     sample_frac(1) %>%
-    mutate(data_file_handle_id = replace_paths_with_filehandles(data)) %>%
-    select(-data) %>%
+    mutate(data_file_handle_id = replace_paths_with_filehandles(path)) %>%
+    select(-path) %>%
     arrange(subject_id, device, measurement, measurement_id)
   data_fname <- "real_pd_sensor_data.csv"
   write_csv(data_df, data_fname)
@@ -208,7 +211,7 @@ main <- function() {
   sensor_data <- fetch_sensor_data() %>%
     inner_join(start_times, by = c("subject_id", "device", "measurement")) %>%
     select(-id)
-  plan(multiprocess, workers = 3)
+  plan(multiprocess, workers = PARALLEL_WORKERS)
   sliced_data <- slice_sensor_data(sensor_data, diary)
   store_sliced_data_and_diary(sliced_data, diary, parent = OUTPUT_PROJECT)
 }
