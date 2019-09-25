@@ -3,6 +3,7 @@ library(tidyverse)
 library(furrr)
 
 TESTING = FALSE
+CACHE_DIR = if (TESTING) "cache" else "/root/cache"
 DIARY = "syn20769648"
 SENSOR_START_TIMES <- "syn20712822"
 SENSOR_DATA <- "syn20542701"
@@ -119,7 +120,13 @@ slice_sensor_data <- function(sensor_data, diary) {
           data = slices) %>%
           filter(purrr::map(data, nrow) > 0) %>%
           mutate(measurement_id = unlist(purrr::map(data, ~ .$measurement_id[[1]])),
-                 data = purrr::map(data, ~ select(., t, x, y, z))) %>%
+                 data = purrr::map(data, function(df) {
+                   fname = tempfile(tmpdir = CACHE_DIR, fileext = ".csv")
+                   df <- df %>%
+                     select(t, x, y, z) %>%
+                     write_csv(fname)
+                   return(fname)
+                 })) %>%
           select(measurement_id, subject_id, context, device, measurement, data)
         return(relevant_slices)
       } else {
@@ -140,12 +147,10 @@ slice_sensor_data <- function(sensor_data, diary) {
   return(sliced_data)
 }
 
-replace_df_with_filehandles <- function(list_of_df) {
-  file_handles <- purrr::map(list_of_df, function(df) {
-    fname <- paste0(tempfile(), ".csv")
-    write_csv(df, fname)
-    fh <- synUploadSynapseManagedFileHandle(fname, mimetype="text/csv")
-    unlink(fname)
+replace_paths_with_filehandles <- function(list_of_paths) {
+  file_handles <- purrr::map(list_of_paths, function(p) {
+    fh <- synUploadSynapseManagedFileHandle(p, mimetype="text/csv")
+    unlink(p)
     return(fh$id)
   })
   file_handles <- unlist(file_handles)
@@ -162,7 +167,7 @@ store_sliced_data_and_diary <- function(sliced_data, diary, parent) {
     select(measurement_id, subject_id, device, measurement, data)
   data_df <- data_df %>%
     sample_frac(1) %>%
-    mutate(data_file_handle_id = replace_df_with_filehandles(data)) %>%
+    mutate(data_file_handle_id = replace_paths_with_filehandles(data)) %>%
     select(-data) %>%
     arrange(subject_id, device, measurement, measurement_id)
   data_fname <- "real_pd_sensor_data.csv"
@@ -196,6 +201,7 @@ store_sliced_data_and_diary <- function(sliced_data, diary, parent) {
 }
 
 main <- function() {
+  if (!dir.exists(CACHE_DIR)) dir.create(CACHE_DIR)
   synLogin()
   diary <- fetch_diary()
   start_times <- fetch_start_times()
