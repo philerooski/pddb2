@@ -2,10 +2,11 @@ library(synapser)
 library(tidyverse)
 library(furrr)
 
-TESTING = FALSE
-PARALLEL_WORKERS = 2
-CACHE_DIR = if (TESTING) "cache" else "/root/cache"
-DIARY = "syn20769648"
+TESTING <- FALSE
+PARALLEL_WORKERS <- 2
+CACHE_DIR <- if (TESTING) "cache" else "/root/cache"
+DIARY <- "syn20769648"
+DIARY_CURATED <- "syn20822276"
 SENSOR_START_TIMES <- "syn20712822"
 SENSOR_DATA <- "syn20542701"
 SENSOR_DATA_REFERENCE <- "syn20820314"
@@ -45,6 +46,11 @@ fetch_diary <- function() {
       select(measurement_id, diary_subject_id, reported_timestamp, diary_start_timestamp,
            diary_end_timestamp, medication_state, slowness_walking, tremor)
   return(diary_raw)
+}
+
+fetch_curated_diary <- function() {
+  q <- synTableQuery(paste("select * from", DIARY_CURATED))
+  return(as_tibble(q$asDataFrame()))
 }
 
 fetch_start_times <- function() {
@@ -265,7 +271,8 @@ store_sliced_data_and_diary <- function(sliced_data, diary, parent) {
 main <- function() {
   if (!dir.exists(CACHE_DIR)) dir.create(CACHE_DIR)
   synLogin()
-  diary <- fetch_diary()
+  #diary <- fetch_diary()
+  diary <- fetch_curated_diary()
   start_times <- fetch_start_times()
   sensor_data <- fetch_sensor_data() %>%
     inner_join(start_times, by = c("subject_id", "device", "measurement")) %>%
