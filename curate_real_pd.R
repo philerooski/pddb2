@@ -2,7 +2,7 @@ library(synapser)
 library(tidyverse)
 library(furrr)
 
-TESTING <- FALSE
+TESTING <- TRUE
 PARALLEL_WORKERS <- 2
 CACHE_DIR <- if (TESTING) "cache" else "/root/cache"
 DIARY <- "syn20769648"
@@ -50,7 +50,11 @@ fetch_diary <- function() {
 
 fetch_curated_diary <- function() {
   q <- synTableQuery(paste("select * from", DIARY_CURATED))
-  return(as_tibble(q$asDataFrame()))
+  diary <- as_tibble(q$asDataFrame()) %>%
+    rename(diary_subject_id = subject_id) %>%
+    select(measurement_id, diary_subject_id, reported_timestamp, diary_start_timestamp,
+           diary_end_timestamp, medication_state, slowness_walking, tremor)
+  return(diary)
 }
 
 fetch_start_times <- function() {
@@ -218,8 +222,12 @@ slice_sensor_data <- function(sensor_data, diary) {
 
 replace_paths_with_filehandles <- function(list_of_paths) {
   file_handles <- purrr::map(list_of_paths, function(p) {
-    fh <- synUploadSynapseManagedFileHandle(p, mimetype="text/csv")
-    return(fh$id)
+    if (!is.na(p)) {
+      fh <- synUploadSynapseManagedFileHandle(p, mimetype="text/csv")
+      return(fh$id)
+    } else {
+      return(NA)
+    }
   })
   file_handles <- unlist(file_handles)
   return(file_handles)
@@ -250,22 +258,24 @@ store_sliced_data_and_diary <- function(sliced_data, diary, parent) {
                         columns = data_cols)
   data_table <- Table(data_schema, data_df)
   synStore(data_table)
-  diary_fname <- "real_pd_diary.csv"
-  write_csv(diary, diary_fname)
-  diary_cols <- list(
-    Column(name = "measurement_id", columnType = "STRING", maximumSize="36"),
-    Column(name = "subject_id", columnType = "STRING", maximumSize="36"),
-    Column(name = "context", columnType = "STRING", maximumSize="36"),
-    Column(name = "reported_timestamp", columnType = "DATE"),
-    Column(name = "diary_start_timestamp", columnType = "DATE"),
-    Column(name = "diary_end_timestamp", columnType = "DATE"),
-    Column(name = "medication_state", columnType = "INTEGER"),
-    Column(name = "slowness_walking", columnType = "INTEGER"),
-    Column(name = "tremor", columnType = "INTEGER"))
-  diary_schema <- Schema(name = "REAL PD Self-Reported Scores", parent = parent,
-                        columns = diary_cols)
-  diary_table <- Table(diary_schema, diary)
-  synStore(diary_table)
+
+  ### Uncomment if curating diary from scratch `diary <- fetch_diary()`
+  #diary_fname <- "real_pd_diary.csv"
+  #write_csv(diary, diary_fname)
+  #diary_cols <- list(
+  #  Column(name = "measurement_id", columnType = "STRING", maximumSize="36"),
+  #  Column(name = "subject_id", columnType = "STRING", maximumSize="36"),
+  #  Column(name = "context", columnType = "STRING", maximumSize="36"),
+  #  Column(name = "reported_timestamp", columnType = "DATE"),
+  #  Column(name = "diary_start_timestamp", columnType = "DATE"),
+  #  Column(name = "diary_end_timestamp", columnType = "DATE"),
+  #  Column(name = "medication_state", columnType = "INTEGER"),
+  #  Column(name = "slowness_walking", columnType = "INTEGER"),
+  #  Column(name = "tremor", columnType = "INTEGER"))
+  #diary_schema <- Schema(name = "REAL PD Self-Reported Scores", parent = parent,
+  #                      columns = diary_cols)
+  #diary_table <- Table(diary_schema, diary)
+  #synStore(diary_table)
 }
 
 main <- function() {
@@ -290,9 +300,18 @@ main <- function() {
   plan(multiprocess, workers = PARALLEL_WORKERS)
   if (nrow(sensor_data)) { # if there are no rows, we have already sliced up all files
     sliced_data <- slice_sensor_data(sensor_data, diary)
-    sliced_data <- bind_rows(sliced_data, already_processed_sensor_data)
-    store_sliced_data_and_diary(sliced_data, diary, parent = OUTPUT_PROJECT)
+  } else {
+    sliced_data <- tibble(
+      measurement_id = character(),
+      subject_id = character(),
+      context = character(),
+      device = character(),
+      measurement = character(),
+      file_identifier = character(),
+      cache_path = character())
   }
+  sliced_data <- bind_rows(sliced_data, already_processed_sensor_data)
+  store_sliced_data_and_diary(sliced_data, diary, parent = OUTPUT_PROJECT)
 }
 
 main()
