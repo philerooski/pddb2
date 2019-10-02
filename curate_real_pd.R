@@ -1,8 +1,9 @@
 library(synapser)
 library(tidyverse)
+library(future)
 library(furrr)
 
-TESTING <- TRUE
+TESTING <- FALSE
 PARALLEL_WORKERS <- 2
 CACHE_DIR <- if (TESTING) "cache" else "/root/cache"
 DIARY <- "syn20769648"
@@ -80,7 +81,9 @@ fetch_sensor_data <- function() {
     "(device = 'Smartwatch' OR device = 'Smartphone')",
     "AND",
     "(measurement = 'gyroscope' OR measurement = 'accelerometer')",
-    {if (TESTING) "LIMIT 2 OFFSET 2" else ""}))
+    "AND",
+    "context = 'follow_up'",
+    {if (TESTING) "LIMIT 2" else ""}))
   sensor_data <- as_tibble(sensor_data_q$asDataFrame())
   # Fortunately, everything with a matching md5 has matching identifying metadata
   # except in the case where the data file is empty except for column names
@@ -234,13 +237,10 @@ replace_paths_with_filehandles <- function(list_of_paths) {
 }
 
 store_sliced_data_and_diary <- function(sliced_data, diary, parent) {
-  context <- sliced_data %>%
-    distinct(measurement_id, context)
   diary <- diary %>%
-    left_join(context, by = "measurement_id") %>%
-    select(measurement_id, subject_id = diary_subject_id, context, dplyr::everything())
+    select(measurement_id, subject_id = diary_subject_id, dplyr::everything())
   data_df <- sliced_data %>%
-    select(measurement_id, subject_id, device, measurement, cache_path)
+    select(measurement_id, subject_id, context, device, measurement, cache_path)
   data_df <- data_df %>%
     sample_frac(1) %>%
     mutate(data_file_handle_id = replace_paths_with_filehandles(cache_path)) %>%
@@ -251,6 +251,7 @@ store_sliced_data_and_diary <- function(sliced_data, diary, parent) {
   data_cols <- list(
     Column(name = "measurement_id", columnType = "STRING", maximumSize="36"),
     Column(name = "subject_id", columnType = "STRING", maximumSize="36"),
+    Column(name = "context", columnType = "STRING", maximumSize="12"),
     Column(name = "device", columnType = "STRING", maximumSize="36"),
     Column(name = "measurement", columnType = "STRING", maximumSize="36"),
     Column(name = "data_file_handle_id", columnType = "FILEHANDLEID"))
