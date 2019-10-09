@@ -45,7 +45,7 @@ load_input_table <- function(input_table, accelerometer_column,
     tibble::enframe(name = NULL) %>%
     rename(measurement_id = value)
   input_table <- input_table %>%
-      semi_join(previously_computed_measurements, by = "measurement_id")
+      anti_join(previously_computed_measurements, by = "measurement_id")
   if (!is.null(accelerometer_column)) {
     accel_data <- synDownloadTableColumns(input_table_q, accelerometer_column)
     accel_table <- tibble(!!accelerometer_column := names(accel_data),
