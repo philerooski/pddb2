@@ -105,7 +105,8 @@ extract_features <- function(input_table, parallel, intermediary_location) {
     select(measurement_id, sensor_location, accelerometer, gyroscope) %>%
     mutate(intermediary_location = intermediary_location)
   features <- furrr::future_pmap_dfr(
-    relevant_input_table, map_features, .progress = TRUE)
+    relevant_input_table, map_features, .progress = TRUE,
+    .options = future_options(scheduling = Inf))
   return(features)
 }
 
