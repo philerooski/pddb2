@@ -33,11 +33,19 @@ read_sensor_data <- function(p) {
   }
 }
 
-load_input_table <- function(input_table, accelerometer_column, gyroscope_column) {
+load_input_table <- function(input_table, accelerometer_column,
+                             gyroscope_column, intermediary_location) {
   input_table_q <- synTableQuery(paste("select * from", input_table))
   input_table <- input_table_q$asDataFrame() %>%
     as_tibble() %>%
     select(-ROW_ID, -ROW_VERSION)
+  previously_computed_measurements <- list.files(intermediary_location) %>%
+    purrr::map(~ str_split(., "\\.")[[1]][1]) %>%
+    unlist() %>%
+    tibble::enframe(name = NULL) %>%
+    rename(measurement_id = value)
+  input_table <- input_table %>%
+      semi_join(previously_computed_measurements, by = "measurement_id")
   if (!is.null(accelerometer_column)) {
     accel_data <- synDownloadTableColumns(input_table_q, accelerometer_column)
     accel_table <- tibble(!!accelerometer_column := names(accel_data),
@@ -118,7 +126,8 @@ main <- function() {
   args <- read_args()
   input_table <- load_input_table(input_table = args$inputTable,
                                   accelerometer_column = args$accelerometerColumn,
-                                  gyroscope_column = args$gyroscopeColumn)
+                                  gyroscope_column = args$gyroscopeColumn,
+                                  intermediary_location = args$cacheDir)
   features <- extract_features(input_table, args$parallel, args$cacheDir)
   store_features(features, args$outputParent)
 }
