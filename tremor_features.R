@@ -3,6 +3,8 @@ library(tidyverse)
 library(optparse)
 library(furrr)
 
+TESTING <- FALSE
+
 read_args <- function() {
   parser <- optparse::OptionParser(
     description = paste("Compute mhealthtools tremor features on a given",
@@ -25,8 +27,10 @@ read_sensor_data <- function(p) {
   if (is.na(p) || is.null(p)) {
     return(NULL)
   } else if (is.character(p)) {
-    d <- read_csv(p) %>%
-      rename(t = Timestamp, x = X, y = Y, z = Z)
+    d <- read_csv(p)
+    if (TESTING) {
+      d <- d %>% filter(t < 121)
+    }
     return(d)
   } else {
     stop("The input path must be a character string.")
@@ -35,7 +39,8 @@ read_sensor_data <- function(p) {
 
 load_input_table <- function(input_table, accelerometer_column,
                              gyroscope_column, intermediary_location) {
-  input_table_q <- synTableQuery(paste("select * from", input_table))
+  input_table_q <- synTableQuery(paste(
+    "select * from", input_table, {if_else(TESTING, "LIMIT 2", "")}))
   input_table <- input_table_q$asDataFrame() %>%
     as_tibble() %>%
     select(-ROW_ID, -ROW_VERSION)
@@ -124,12 +129,25 @@ store_features <- function(features, parent) {
 
 main <- function() {
   synLogin()
-  args <- read_args()
+  if (TESTING) {
+    args <- list()
+    args$inputTable <- "syn20824031"
+    args$accelerometerColumn <- "smartphone_accelerometer"
+    args$gyroscopeColumn <- NULL
+    args$cacheDir <- "cache"
+    args$parallel <- TRUE
+  } else {
+    args <- read_args()
+  }
   input_table <- load_input_table(input_table = args$inputTable,
                                   accelerometer_column = args$accelerometerColumn,
                                   gyroscope_column = args$gyroscopeColumn,
                                   intermediary_location = args$cacheDir)
-  features <- extract_features(input_table, args$parallel, args$cacheDir)
+  if (nrow(input_table)) {
+    features <- extract_features(input_table, args$parallel, args$cacheDir)
+  } else {
+    stop("All features have already been stored to the cache directory.")
+  }
   store_features(features, args$outputParent)
 }
 
