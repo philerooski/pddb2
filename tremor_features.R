@@ -40,7 +40,9 @@ read_sensor_data <- function(p) {
 load_input_table <- function(input_table, accelerometer_column,
                              gyroscope_column, intermediary_location) {
   input_table_q <- synTableQuery(paste(
-    "select * from", input_table, {if_else(TESTING, "LIMIT 2", "")}))
+    "select * from", input_table, "WHERE", accelerometer_column, "IS NOT NULL",
+    "AND", gyroscope_column, "IS NOT NULL",
+    {if_else(TESTING, "LIMIT 2", "")}))
   input_table <- input_table_q$asDataFrame() %>%
     as_tibble() %>%
     select(-ROW_ID, -ROW_VERSION)
@@ -82,7 +84,7 @@ map_features <- function(measurement_id, sensor_location, accelerometer,
   window_length <- as.integer(60*sampling_rate) # one-minute long windows
   tremor_features <- mhealthtools::get_tremor_features(
     accel_data, gyro_data, window_length=window_length, window_overlap=0,
-    derived_kinematics=T, detrend=T, frequency_filter = c(1, 25))
+    derived_kinematics=F, detrend=T, frequency_filter = c(1, 25))
   if (is.null(tremor_features$error) && !is.null(tremor_features$extracted_features)) {
     tremor_features <- tremor_features$extracted_features
   } else {
@@ -110,8 +112,7 @@ extract_features <- function(input_table, parallel, intermediary_location) {
     select(measurement_id, sensor_location, accelerometer, gyroscope) %>%
     mutate(intermediary_location = intermediary_location)
   features <- furrr::future_pmap_dfr(
-    relevant_input_table, map_features, .progress = TRUE,
-    .options = future_options(scheduling = Inf))
+    relevant_input_table, map_features, .progress = TRUE)
   return(features)
 }
 
