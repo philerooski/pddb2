@@ -127,6 +127,21 @@ store_features <- function(features, parent) {
   })
 }
 
+store_cached_features <- function(cacheDir, parent, fname) {
+  cached_files <- list.dirs(cacheDir)
+  #measurement_ids <- cached_files %>%
+  #  purrr::map(~ stringr::str_split(., "\\.")[[1]][[1]])
+  features <- purrr::map_dfr(cached_files, ~ read_tsv)
+  write_tsv(features, fname)
+  tryCatch({
+    f <- synapser::File(fname, parent=parent)
+    synStore(f)
+    unlink(fname)
+  }, error = function(err) {
+    stop(paste(conditionMessage(err), "Features not stored to Synapse:", fname))
+  })
+}
+
 main <- function() {
   synLogin()
   if (TESTING) {
