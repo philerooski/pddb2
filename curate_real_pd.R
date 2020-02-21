@@ -9,7 +9,7 @@ CACHE_DIR <- if (TESTING) "cache" else "/root/cache"
 DIARY <- "syn20769648"
 DIARY_CURATED <- "syn20822276"
 SENSOR_START_TIMES <- "syn20712822"
-SENSOR_DATA <- "syn20542701"
+SENSOR_DATA <-  "syn21614548" # "syn20542701"
 SENSOR_DATA_REFERENCE <- "syn20820314"
 OUTPUT_PROJECT <- if (TESTING) "syn11611056" else "syn18407520"
 
@@ -78,7 +78,8 @@ fetch_start_times <- function() {
 fetch_sensor_data <- function() {
   sensor_data_q <- synTableQuery(paste(
     "SELECT * FROM", SENSOR_DATA, "WHERE",
-    "(device = 'Smartwatch' OR device = 'Smartphone')",
+    #"(device = 'Smartwatch' OR device = 'Smartphone')",
+    "device = 'Smartwatch'",
     "AND",
     "(measurement = 'gyroscope' OR measurement = 'accelerometer')",
     "AND",
@@ -255,7 +256,8 @@ store_sliced_data_and_diary <- function(sliced_data, diary, parent) {
     Column(name = "device", columnType = "STRING", maximumSize="36"),
     Column(name = "measurement", columnType = "STRING", maximumSize="36"),
     Column(name = "data_file_handle_id", columnType = "FILEHANDLEID"))
-  data_schema <- Schema(name = "REAL PD Accelerometer and Gyroscope Data", parent = parent,
+  data_schema <- Schema(name = "REAL PD Accelerometer and Gyroscope Data Watch Update",
+                        parent = parent,
                         columns = data_cols)
   data_table <- Table(data_schema, data_df)
   synStore(data_table)
@@ -292,7 +294,8 @@ main <- function() {
   already_processed_sensor_data <- get_already_processed_sensor_data(
     sensor_data, sensor_data_ref)
   sensor_data <- sensor_data %>%
-    left_join(sensor_data_ref) %>%
+    #left_join(sensor_data_ref) %>%
+    inner_join(sensor_data_ref) %>%
     anti_join(already_processed_sensor_data, by = "file_identifier") %>%
     select(subject_id, context, device, measurement, first_time, last_time, path, cache_dir)
   already_processed_sensor_data <- already_processed_sensor_data %>%
@@ -315,4 +318,4 @@ main <- function() {
   store_sliced_data_and_diary(sliced_data, diary, parent = OUTPUT_PROJECT)
 }
 
-main()
+#main()
