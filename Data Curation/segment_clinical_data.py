@@ -54,8 +54,64 @@ def compute_cis_segments(syn, subject_ids):
     all_times["duration"] = all_times["duration"].apply(datetime.timedelta.total_seconds)
     all_times = all_times.query("duration > 0")
     all_times = all_times.sort_values("duration").groupby(["subject_id", "start_time"]).first()
+    all_times = all_times.reset_index(drop=False)
     return all_times
 
+
+def segment_from_reference(sensor_data, reference):
+    pass
+
+
+def compute_real_segments(syn, subject_ids):
+    real_pd_timestamps = pd.read_table(syn.get(REAL_PD_TIMESTAMPS).path, sep=";")
+    video_to_device = pd.read_excel(syn.get(VIDEO_TO_DEVICE_TIME).path)
+    # Munge on real_pd_timestamps to get segment start/stop (in *video* time)
+    # off
+    real_pd_off_timestamps = real_pd_timestamps[
+            real_pd_timestamps.OFF_UPDRS_start.notnull() &
+            real_pd_timestamps.OFF_free_living_start.notnull()][
+                    ["Record Id", "date_screening", "OFF_UPDRS_start", "OFF_free_living_start"]]
+    real_pd_off_timestamps = real_pd_off_timestamps.rename(
+            {"OFF_UPDRS_start": "start_time", "OFF_free_living_start": "end_time"},
+            axis=1)
+    real_pd_off_timestamps = fix_real_pd_datetimes(real_pd_off_timestamps)
+    real_pd_off_timestamps = real_pd_off_timestamps.drop("date_screening", axis=1)
+    # on
+    real_pd_on_timestamps = real_pd_timestamps[
+            real_pd_timestamps.ON_UPDRS_start.notnull() &
+            real_pd_timestamps.ON_free_living_start.notnull()][
+                    ["Record Id", "date_screening", "ON_UPDRS_start", "ON_free_living_start"]]
+    real_pd_on_timestamps = real_pd_on_timestamps.rename(
+            {"ON_UPDRS_start": "start_time", "ON_free_living_start": "end_time"},
+            axis=1)
+    real_pd_on_timestamps = fix_real_pd_datetimes(real_pd_on_timestamps)
+    real_pd_on_timestamps = real_pd_on_timestamps.drop("date_screening", axis=1)
+    return real_pd_off_timestamps, real_pd_on_timestamps
+
+
+def fix_real_pd_datetimes(df):
+    # get rid of negative "times" (these look like negative integers)
+    df = df[~df.start_time.str.startswith("-") & ~df.end_time.str.startswith("-")]
+    df["date_screening"] = df.date_screening.apply(dmy_to_ymd)
+    df["start_time"] = [
+            datetime.datetime.fromisoformat("{} {}".format(i[0], i[1])).isoformat()
+            for i in zip(df["date_screening"], df["start_time"])]
+    df["end_time"] = [
+            datetime.datetime.fromisoformat("{} {}".format(i[0], i[1])).isoformat()
+            for i in zip(df["date_screening"], df["end_time"])]
+    return(df)
+
+
+def dmy_to_ymd(s):
+    s_ = s.split("-")
+    s_ = list(map(int, s_))
+    s_iso_format = datetime.date(s_[-1], s_[-2], s_[-3]).isoformat()
+    return s_iso_format
+
+
+def download_sensor_data(syn):
+    # TODO download all relevent data (check if *all* sensor data is relevent)
+    pass
 
 def main():
     syn = sc.login()
