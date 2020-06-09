@@ -7,6 +7,7 @@ import datetime
 CIS_PD_UPDRS_P3_TABLE = "syn18435297" # start times
 # Table4 Motor Task Timestamps and Scores
 CIS_MOTOR_TASK_TIMESTAMPS = "syn18435302" # end times
+CIS_SENSOR_DATA = "syn22144319"
 
 # Home-based_validation_export_20181129.csv
 REAL_PD_TIMESTAMPS = "syn20769652"
@@ -23,6 +24,7 @@ VIDEO_TO_DEVICE_TIME = "syn20645722" # indexed by pat_id, device
 
 CIS_TRAINING_MEASUREMENTS = "syn21291578"
 REAL_TRAINING_MEASUREMENTS = "syn21292049"
+
 
 def get_training_subjects(syn, training_measurements):
     f = syn.get(training_measurements)
@@ -58,47 +60,69 @@ def compute_cis_segments(syn, subject_ids):
     return all_times
 
 
-def segment_from_reference(sensor_data, reference):
+#' This is for the case where our segments have clearly defined start/end times
+def segment_from_start_to_end(sensor_data, reference):
+    pass
+
+
+#' This is for columns Time_interval_X where we are segmenting data
+#' centered around a single timepoint
+def segment_from_center(sensor_data, reference):
     pass
 
 
 def compute_real_segments(syn, subject_ids):
     real_pd_timestamps = pd.read_table(syn.get(REAL_PD_TIMESTAMPS).path, sep=";")
+    real_pd_timestamps = real_pd_timestamps.dropna(subset = ["date_screening"])
+    real_pd_timestamps["date_screening"] = \
+            real_pd_timestamps["date_screening"].apply(dmy_to_ymd)
     video_to_device = pd.read_excel(syn.get(VIDEO_TO_DEVICE_TIME).path)
     # Munge on real_pd_timestamps to get segment start/stop (in *video* time)
     # off
-    real_pd_off_timestamps = real_pd_timestamps[
+    off_timestamps = real_pd_timestamps[
             real_pd_timestamps.OFF_UPDRS_start.notnull() &
             real_pd_timestamps.OFF_free_living_start.notnull()][
                     ["Record Id", "date_screening", "OFF_UPDRS_start", "OFF_free_living_start"]]
-    real_pd_off_timestamps = real_pd_off_timestamps.rename(
+    off_timestamps = off_timestamps.rename(
             {"OFF_UPDRS_start": "start_time", "OFF_free_living_start": "end_time"},
             axis=1)
-    real_pd_off_timestamps = fix_real_pd_datetimes(real_pd_off_timestamps)
-    real_pd_off_timestamps = real_pd_off_timestamps.drop("date_screening", axis=1)
+    off_timestamps = fix_real_pd_datetimes(off_timestamps, "start_time")
+    off_timestamps = fix_real_pd_datetimes(off_timestamps, "end_time")
+    off_timestamps = off_timestamps.dropna()
+    off_timestamps = off_timestamps.drop("date_screening", axis=1)
     # on
-    real_pd_on_timestamps = real_pd_timestamps[
+    on_timestamps = real_pd_timestamps[
             real_pd_timestamps.ON_UPDRS_start.notnull() &
             real_pd_timestamps.ON_free_living_start.notnull()][
                     ["Record Id", "date_screening", "ON_UPDRS_start", "ON_free_living_start"]]
-    real_pd_on_timestamps = real_pd_on_timestamps.rename(
+    on_timestamps = on_timestamps.rename(
             {"ON_UPDRS_start": "start_time", "ON_free_living_start": "end_time"},
             axis=1)
-    real_pd_on_timestamps = fix_real_pd_datetimes(real_pd_on_timestamps)
-    real_pd_on_timestamps = real_pd_on_timestamps.drop("date_screening", axis=1)
-    return real_pd_off_timestamps, real_pd_on_timestamps
+    on_timestamps = fix_real_pd_datetimes(on_timestamps, "start_time")
+    on_timestamps = fix_real_pd_datetimes(on_timestamps, "end_time")
+    on_timestamps = on_timestamps.dropna()
+    on_timestamps = on_timestamps.drop("date_screening", axis=1)
+    # hauser diary
+    hauser_time_cols = ["Time_interval_{}".format(i) for i in range(1,7)]
+    hauser_timestamps = real_pd_timestamps[
+            ["Record Id", "date_screening"] + hauser_time_cols]
+    for c in hauser_time_cols:
+        hauser_timestamps = fix_real_pd_datetimes(
+                hauser_timestamps, c)
+    hauser_timestamps = hauser_timestamps.dropna(
+            subset = hauser_time_cols, how="all")
+    hauser_timestamps = hauser_timestamps.drop("date_screening", axis=1)
+    return off_timestamps, on_timestamps, hauser_timestamps
 
 
-def fix_real_pd_datetimes(df):
+def fix_real_pd_datetimes(df, col_to_fix):
     # get rid of negative "times" (these look like negative integers)
-    df = df[~df.start_time.str.startswith("-") & ~df.end_time.str.startswith("-")]
-    df["date_screening"] = df.date_screening.apply(dmy_to_ymd)
-    df["start_time"] = [
+    df[col_to_fix] = [float("nan") if str(i).startswith("-") else i
+                      for i in df[col_to_fix]]
+    df[col_to_fix] = [
             datetime.datetime.fromisoformat("{} {}".format(i[0], i[1])).isoformat()
-            for i in zip(df["date_screening"], df["start_time"])]
-    df["end_time"] = [
-            datetime.datetime.fromisoformat("{} {}".format(i[0], i[1])).isoformat()
-            for i in zip(df["date_screening"], df["end_time"])]
+            if pd.notnull(i[1]) else float("nan")
+            for i in zip(df["date_screening"], df[col_to_fix])]
     return(df)
 
 
@@ -109,9 +133,18 @@ def dmy_to_ymd(s):
     return s_iso_format
 
 
-def download_sensor_data(syn):
-    # TODO download all relevent data (check if *all* sensor data is relevent)
-    pass
+def download_sensor_data(syn, table, device, subject_ids = None):
+    if isinstance(subject_ids, list):
+        subject_id_str = "('" + "','".join(subject_ids)
+    else:
+        subject_id_str = ""
+    sensor_data = syn.tableQuery(
+        "SELECT * FROM {} WHERE device = '{}' {}".format(table, device,
+        "AND subject_id IN {}".format(subject_id_str) if subject_id_str else ""))
+    sensor_data = sensor_data.asDataFrame()
+    sensor_data["path"] = [syn.get(i).path for i in sensor_data.id]
+    return sensor_data
+
 
 def main():
     syn = sc.login()
