@@ -21,6 +21,8 @@ HAUSER_DIARY_START_STOP_INTERVALS = [
   ("Time_interval_5", "Time_interval_6")]
 # Synchronization_events_annotations.xls
 VIDEO_TO_DEVICE_TIME = "syn20645722" # indexed by pat_id, device
+REAL_UPDATED_WATCH_DATA = "syn21614548"
+REAL_SMARTPHONE_DATA = "syn20542701"
 
 CIS_TRAINING_MEASUREMENTS = "syn21291578"
 REAL_TRAINING_MEASUREMENTS = "syn21292049"
@@ -29,7 +31,7 @@ REAL_TRAINING_MEASUREMENTS = "syn21292049"
 def get_training_subjects(syn, training_measurements):
     f = syn.get(training_measurements)
     df = pd.read_csv(f.path)
-    return df.subject_id.unique().astype(str)
+    return df.subject_id.unique().astype(str).tolist()
 
 
 def compute_cis_segments(syn, subject_ids):
@@ -56,13 +58,17 @@ def compute_cis_segments(syn, subject_ids):
     all_times["duration"] = all_times["duration"].apply(datetime.timedelta.total_seconds)
     all_times = all_times.query("duration > 0")
     all_times = all_times.sort_values("duration").groupby(["subject_id", "start_time"]).first()
+    all_times = all_times.drop("duration", axis=1)
     all_times = all_times.reset_index(drop=False)
     return all_times
 
 
-#' This is for the case where our segments have clearly defined start/end times
+#' This is for the case where our segments have clearly defined start/end times.
+#' Since loading in a single sensor file can take up a large amount of memory,
+#' we need to load one file at a time, then determine whether any of our segments
+#' are contained within the sensor file.
 def segment_from_start_to_end(sensor_data, reference):
-    pass
+    segments = []
 
 
 #' This is for columns Time_interval_X where we are segmenting data
@@ -133,15 +139,23 @@ def dmy_to_ymd(s):
     return s_iso_format
 
 
-def download_sensor_data(syn, table, device, subject_ids = None):
-    if isinstance(subject_ids, list):
-        subject_id_str = "('" + "','".join(subject_ids)
+def list_append_to_query_str(query_str, col, list_of_things):
+    if isinstance(list_of_things, list):
+        str_of_things = "('" + "','".join(list_of_things) + "')"
     else:
-        subject_id_str = ""
-    sensor_data = syn.tableQuery(
-        "SELECT * FROM {} WHERE device = '{}' {}".format(table, device,
-        "AND subject_id IN {}".format(subject_id_str) if subject_id_str else ""))
-    sensor_data = sensor_data.asDataFrame()
+        str_of_things = ""
+    if str_of_things:
+        query_str = "{} {}".format(
+                query_str, "AND {} IN {}".format(col, str_of_things))
+    return(query_str)
+
+
+def download_sensor_data(syn, table, device, subject_ids=None, measurements=None):
+    query_str = "SELECT * FROM {} WHERE device = '{}'".format(table, device)
+    query_str = list_append_to_query_str(query_str, "subject_id", subject_ids)
+    query_str = list_append_to_query_str(query_str, "measurement", measurements)
+    print(query_str)
+    sensor_data = syn.tableQuery(query_str).asDataFrame()
     sensor_data["path"] = [syn.get(i).path for i in sensor_data.id]
     return sensor_data
 
@@ -150,6 +164,26 @@ def main():
     syn = sc.login()
     cis_training_subjects = get_training_subjects(syn, CIS_TRAINING_MEASUREMENTS)
     real_training_subjects = get_training_subjects(syn, REAL_TRAINING_MEASUREMENTS)
+    cis_smartphone_data = download_sensor_data(
+            syn,
+            table = CIS_SENSOR_DATA,
+            device = "smartphone",
+            subject_ids = cis_training_subjects)
+    real_smartwatch_data = download_sensor_data(
+            syn,
+            table = REAL_UPDATED_WATCH_DATA,
+            device = "Smartwatch",
+            subject_ids = real_training_subjects,
+            measurements = ["accelerometer", "gyroscope"])
+    real_smartphone_data = download_sensor_data(
+            syn,
+            table = REAL_SMARTPHONE_DATA,
+            device = "Smartphone",
+            subject_ids = real_training_subjects,
+            measurements = ["accelerometer"])
+    cis_segments = compute_cis_segments(syn, cis_training_subjects)
+    real_off_segments, real_on_segments, real_hauser_intervals = \
+            compute_real_segments(syn, real_training_subjects)
 
 
 main()
