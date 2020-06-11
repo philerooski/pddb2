@@ -4,12 +4,14 @@ import datetime
 import uuid
 
 
+# CIS-PD
 # Table3 MDS-UPDRS Part III
 CIS_PD_UPDRS_P3_TABLE = "syn18435297" # start times
 # Table4 Motor Task Timestamps and Scores
 CIS_MOTOR_TASK_TIMESTAMPS = "syn18435302" # end times
 CIS_SENSOR_DATA = "syn22144319"
 
+# REAL-PD
 # Home-based_validation_export_20181129.csv
 REAL_PD_TIMESTAMPS = "syn20769652"
 REAL_START_TIMES = "syn22151606"
@@ -26,9 +28,11 @@ VIDEO_TO_DEVICE_TIME = "syn20645722" # indexed by pat_id (subject_id), device
 REAL_UPDATED_WATCH_DATA = "syn21614548"
 REAL_SMARTPHONE_DATA = "syn20542701"
 
-CIS_TRAINING_MEASUREMENTS = "syn21291578"
-REAL_TRAINING_MEASUREMENTS = "syn21292049"
+# MISC
+CIS_TRAINING_LABELS = "syn21291578"
+REAL_TRAINING_LABELS = "syn21292049"
 OUTPUT_PROJECT = "syn22152015"
+TESTING = True
 
 
 def get_training_subjects(syn, training_measurements):
@@ -55,14 +59,16 @@ def get_real_start_times(syn):
     sensor_start_times = sensor_start_times.rename({
         "Ind.ID": "subject_id",
         "Device": "device",
-        "Data_Type": "measurement"},
+        "Data_Type": "measurement",
+        "first_time": "start_time",
+        "last_time": "end_time"},
         axis=1)
     sensor_start_times["measurement"] = sensor_start_times.measurement.replace({
         "gyro.bin": "gyroscope",
         "accel.bin": "accelerometer",
         "HopkinsPD_stream_accel_*.raw": "accelerometer"})
     sensor_start_times = sensor_start_times[
-            ["subject_id", "device", "measurement", "first_time", "last_time"]]
+            ["subject_id", "device", "measurement", "start_time", "end_time"]]
     return(sensor_start_times)
 
 
@@ -92,7 +98,7 @@ def compute_cis_segments(syn, subject_ids):
     all_times = all_times.sort_values("duration").groupby(["subject_id", "start_time"]).first()
     all_times = all_times.drop("duration", axis=1)
     all_times = all_times.reset_index(drop=False)
-    all_times["segment_id"] = [uuid.uuid4() for i in range(len(all_times))]
+    all_times["segment_id"] = [str(uuid.uuid4()) for i in range(len(all_times))]
     all_times = all_times.set_index(["subject_id", "visit", "segment_id"])
     return all_times
 
@@ -120,17 +126,44 @@ def segment_cis_pd(smartphone_data, segment_timestamps):
 #' Since loading in a single sensor file can take up a large amount of memory,
 #' we need to load one file at a time, then determine whether any of our segments
 #' are contained within the sensor file.
+#'
+#' sensor_data is a dataframe like one returned from `download_sensor_data`,
+#' with (at least) columns subject_id and path
+#' `reference` is a dataframe with an index containing at least the `subject_id`
+#' and two datetime columns: start_time and end_time
+#' `timestamp_col` is the name of the column *in a sensor data file* where
+#' the time is recorded. E.g., "Timestamp" for CIS-PD sensor data.
 def segment_from_start_to_end(sensor_data, reference, timestamp_col):
+    indices = []
     segments = []
     for subject_id, path in zip(sensor_data.subject_id, sensor_data.path):
         sensor_measurement = pd.read_csv(path)
         sensor_measurement[timestamp_col] = pd.to_datetime(
                 sensor_measurement[timestamp_col])
+        sensor_measurement = sensor_measurement.set_index(timestamp_col)
+        sensor_measurement = sensor_measurement.sort_index()
+        relevant_segments = reference.query("subject_id == @subject_id")
+        for index, segment in relevant_segments.iterrows():
+            start_time, end_time = segment["start_time"], segment["end_time"]
+            segment_data = sensor_measurement.loc[start_time:end_time]
+            if segment_data.shape[0]:
+                indices.append(index)
+                segments.append(segment_data)
+    segment_df = pd.DataFrame({"segments": segments}, index=indices)
+    return segment_df
+
 
 
 #' This is for columns Time_interval_X where we are segmenting data
 #' centered around a single timepoint
-def segment_from_center(sensor_data, reference):
+
+#' sensor_data is a dataframe like one returned from `download_sensor_data`,
+#' with (at least) columns subject_id and path
+#' `reference` is a dataframe with an index containing at least the `subject_id`
+#' and two datetime columns: start_time and end_time
+#' `timestamp_col` is the name of the column *in a sensor data file* where
+#' the time is recorded. E.g., "Timestamp" for CIS-PD sensor data.
+def segment_from_center(sensor_data, reference, timestamp_col):
     pass
 
 
@@ -143,8 +176,6 @@ def convert_video_time_to_device_time(video_times, reference):
     pass
 
 
-# TODO: where do we need to convert string to datetime?
-# Does fix_real_pd_datetimes do this / should do this already?
 def compute_real_segments(syn, subject_ids):
     real_pd_timestamps = pd.read_table(syn.get(REAL_PD_TIMESTAMPS).path, sep=";")
     real_pd_timestamps = real_pd_timestamps.dropna(subset = ["date_screening"])
@@ -165,9 +196,8 @@ def compute_real_segments(syn, subject_ids):
     off_timestamps = fix_real_pd_datetimes(off_timestamps, "end_time")
     off_timestamps = off_timestamps.dropna()
     off_timestamps = off_timestamps.drop("date_screening", axis=1)
-    off_timestamps["segment_id"] = [uuid.uuid4() for i in range(len(off_timestamps))]
+    off_timestamps["segment_id"] = [str(uuid.uuid4()) for i in range(len(off_timestamps))]
     off_timestamps = off_timestamps.set_index(["subject_id", "segment_id"])
-    off_timestamps = off_timestamps.applymap(datetime.datetime.fromisoformat)
     # on
     on_timestamps = real_pd_timestamps[
             real_pd_timestamps.ON_UPDRS_start.notnull() &
@@ -182,9 +212,8 @@ def compute_real_segments(syn, subject_ids):
     on_timestamps = fix_real_pd_datetimes(on_timestamps, "end_time")
     on_timestamps = on_timestamps.dropna()
     on_timestamps = on_timestamps.drop("date_screening", axis=1)
-    on_timestamps["segment_id"] = [uuid.uuid4() for i in range(len(on_timestamps))]
+    on_timestamps["segment_id"] = [str(uuid.uuid4()) for i in range(len(on_timestamps))]
     on_timestamps = on_timestamps.set_index(["subject_id", "segment_id"])
-    on_timestamps = on_timestamps.applymap(datetime.datetime.fromisoformat)
     # hauser diary
     hauser_time_cols = ["Time_interval_{}".format(i) for i in range(1,7)]
     hauser_timestamps = real_pd_timestamps[
@@ -197,9 +226,8 @@ def compute_real_segments(syn, subject_ids):
     hauser_timestamps = hauser_timestamps.drop("date_screening", axis=1)
     hauser_timestamps = hauser_timestamps.rename(
             {"Record Id": "subject_id"}, axis=1)
-    hauser_timestamps["segment_id"] = [uuid.uuid4() for i in range(len(hauser_timestamps))]
+    hauser_timestamps["segment_id"] = [str(uuid.uuid4()) for i in range(len(hauser_timestamps))]
     hauser_timestamps = hauser_timestamps.set_index(["subject_id", "segment_id"])
-    hauser_timestamps = hauser_timestamps.applymap(datetime.datetime.fromisoformat)
     return off_timestamps, on_timestamps, hauser_timestamps
 
 
@@ -207,8 +235,9 @@ def fix_real_pd_datetimes(df, col_to_fix):
     # get rid of negative "times" (these look like negative integers)
     df[col_to_fix] = [float("nan") if str(i).startswith("-") else i
                       for i in df[col_to_fix]]
+    # concatenate dates and times and convert to datetime objects
     df[col_to_fix] = [
-            datetime.datetime.fromisoformat("{} {}".format(i[0], i[1])).isoformat()
+            datetime.datetime.fromisoformat("{} {}".format(i[0], i[1]))
             if pd.notnull(i[1]) else float("nan")
             for i in zip(df["date_screening"], df[col_to_fix])]
     return(df)
@@ -236,6 +265,8 @@ def download_sensor_data(syn, table, device, subject_ids=None, measurements=None
     query_str = "SELECT * FROM {} WHERE device = '{}'".format(table, device)
     query_str = list_append_to_query_str(query_str, "subject_id", subject_ids)
     query_str = list_append_to_query_str(query_str, "measurement", measurements)
+    if TESTING:
+        query_str = "{} {}".format(query_str, "LIMIT 1")
     print(query_str)
     sensor_data = syn.tableQuery(query_str).asDataFrame()
     sensor_data["path"] = [syn.get(i).path for i in sensor_data.id]
@@ -246,7 +277,7 @@ def main():
     syn = sc.login()
 
     # CIS-PD
-    cis_training_subjects = get_training_subjects(syn, CIS_TRAINING_MEASUREMENTS)
+    cis_training_subjects = get_training_subjects(syn, CIS_TRAINING_LABELS)
     cis_smartphone_data = download_sensor_data(
             syn,
             table = CIS_SENSOR_DATA,
@@ -258,7 +289,7 @@ def main():
             segment_timestamps = cis_segment_timestamps)
 
     # REAL-PD
-    real_training_subjects = get_training_subjects(syn, REAL_TRAINING_MEASUREMENTS)
+    real_training_subjects = get_training_subjects(syn, REAL_TRAINING_LABELS)
     real_smartwatch_data = download_sensor_data(
             syn,
             table = REAL_UPDATED_WATCH_DATA,
