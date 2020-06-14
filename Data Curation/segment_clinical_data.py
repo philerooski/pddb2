@@ -60,15 +60,16 @@ def get_real_start_times(syn):
         "Ind.ID": "subject_id",
         "Device": "device",
         "Data_Type": "measurement",
-        "first_time": "start_time",
-        "last_time": "end_time"},
+        "first_time": "device_start_time",
+        "last_time": "device_end_time"},
         axis=1)
     sensor_start_times["measurement"] = sensor_start_times.measurement.replace({
         "gyro.bin": "gyroscope",
         "accel.bin": "accelerometer",
         "HopkinsPD_stream_accel_*.raw": "accelerometer"})
     sensor_start_times = sensor_start_times[
-            ["subject_id", "device", "measurement", "start_time", "end_time"]]
+            ["subject_id", "device", "measurement",
+             "device_start_time", "device_end_time"]]
     return(sensor_start_times)
 
 
@@ -103,9 +104,7 @@ def compute_cis_segments(syn, subject_ids):
     return all_times
 
 
-#' Handles the special rules that apply to REAL-PD segments
-def segment_real_pd(smartphone_data, smartwatch_data, on_timestamps,
-                    off_timestamps, hauser_timestamps):
+def get_video_to_device_time_reference(syn):
     # There are different video<->device time conversions that need to be
     # applied at the subject_id/device level.
     video_to_device = pd.read_excel(syn.get(VIDEO_TO_DEVICE_TIME).path)
@@ -114,7 +113,16 @@ def segment_real_pd(smartphone_data, smartwatch_data, on_timestamps,
             "device == 'Smartphone' or device == 'Smartwatch'")
     video_to_device = video_to_device[
             video_to_device.v1.notnull() & video_to_device.t1.notnull()]
-    video_to_device = video_to_device[["subject_id", "device", "v1", "t1"]]
+    video_to_device["offset"] = [pd.DateOffset(seconds=t-v)
+            for t,v in zip(video_to_device.t1, video_to_device.v1)]
+    video_to_device = video_to_device[["subject_id", "device", "offset"]]
+    return(video_to_device)
+
+
+#' Handles the special rules that apply to REAL-PD segments
+def segment_real_pd(smartphone_data, smartwatch_data, on_timestamps,
+                    off_timestamps, hauser_timestamps, video_to_device):
+    pass
 
 
 #' Handles the special rules that apply to CIS-PD segments
@@ -122,24 +130,53 @@ def segment_cis_pd(smartphone_data, segment_timestamps):
     pass
 
 
-#' This is for the case where our segments have clearly defined start/end times.
-#' Since loading in a single sensor file can take up a large amount of memory,
-#' we need to load one file at a time, then determine whether any of our segments
-#' are contained within the sensor file.
-#'
-#' sensor_data is a dataframe like one returned from `download_sensor_data`,
-#' with (at least) columns subject_id and path
-#' `reference` is a dataframe with an index containing at least the `subject_id`
-#' and two datetime columns: start_time and end_time
-#' `timestamp_col` is the name of the column *in a sensor data file* where
-#' the time is recorded. E.g., "Timestamp" for CIS-PD sensor data.
-def segment_from_start_to_end(sensor_data, reference, timestamp_col):
+"""
+This is for the case where our segments have clearly defined start/end times.
+Since loading in a single sensor file can take up a large amount of memory,
+we need to load one file at a time, then determine whether any of our segments
+are contained within the sensor file.
+
+Args:
+sensor_data     -- a dataframe like one returned from `download_sensor_data`,
+                   with (at least) columns subject_id, device, measurement, and path
+reference       -- a dataframe with an index containing at least the `subject_id`
+                   and two datetime columns: start_time and end_time
+timestamp_col   -- the name of the column *in a sensor data file* where
+                   the time is recorded. E.g., "Timestamp" for CIS-PD sensor data.
+real_timestamps -- For REAL-PD, timestamp information must be reinjected into
+                   the sensor data. This is a dataframe indexed by subject_id,
+                   device, and measurement, like that returned by
+                   `get_real_start_times`. This dataframe also has columns
+                   `video_start_time` and `video_end_time` which contain
+                   timestamps relative to video time. I.e., the same time
+                   system we are using for our segments in the `reference`
+                   parameter.
+"""
+def segment_from_start_to_end(sensor_data, reference, timestamp_col,
+                              real_timestamps = None):
     indices = []
     segments = []
-    for subject_id, path in zip(sensor_data.subject_id, sensor_data.path):
-        sensor_measurement = pd.read_csv(path)
-        sensor_measurement[timestamp_col] = pd.to_datetime(
-                sensor_measurement[timestamp_col])
+    for i,r in sensor_data.iterrows():
+        subject_id, device, measurement, path = \
+                r["subject_id"], r["path"], r["measurement"], r["path"]:
+        if real_timestamps is not None: # REAL-PD
+            # if we can't find a start time, we won't bother loading sensor data
+            start_time_df = real_timestamps.query(
+                    "subject_id == @subject_id and "
+                    "device == @device and "
+                    "measurement == @measurement")
+            if start_time_df.shape[0] == 1:
+                start_time = start_time_df["video_start_time"].iloc[0]
+                sensor_measurement = pd.read_csv(path)
+                sensor_measurement[timestamp_col] = \
+                    sensor_measurement[timestamp_col].apply(
+                            lambda s : start_time + pd.DateOffset(seconds=int(s)))
+            else:
+                continue
+        else: # CIS-PD
+            sensor_measurement = pd.read_csv(path)
+            sensor_measurement[timestamp_col] = pd.to_datetime(
+                    sensor_measurement[timestamp_col])
         sensor_measurement = sensor_measurement.set_index(timestamp_col)
         sensor_measurement = sensor_measurement.sort_index()
         relevant_segments = reference.query("subject_id == @subject_id")
@@ -151,7 +188,6 @@ def segment_from_start_to_end(sensor_data, reference, timestamp_col):
                 segments.append(segment_data)
     segment_df = pd.DataFrame({"segments": segments}, index=indices)
     return segment_df
-
 
 
 #' This is for columns Time_interval_X where we are segmenting data
@@ -167,12 +203,8 @@ def segment_from_center(sensor_data, reference, timestamp_col):
     pass
 
 
-#' `video_times` is a dataframe indexed by subject_id
-#' where the other columns are timestamps (represented as iso8601 strings)
-#' reference is a dataframe indexed by subject_id and device.
-#' It also has columns `v1` and `t1` that represent video time
-#' and device time, respectively, relative to a shared "0" (reference time).
-def convert_video_time_to_device_time(video_times, reference):
+#' `real_device_timestamps` is a dataframe
+def set_device_timestamps(real_device_timestamps):
     pass
 
 
@@ -304,7 +336,21 @@ def main():
             measurements = ["accelerometer"])
     real_off_segment_timestamps, real_on_segment_timestamps, real_hauser_interval_timestamps = \
             compute_real_segments(syn, real_training_subjects)
+    # Since we need to do some complicated video<->device timestamp
+    # conversions we will compute start/stop timestamps for REAL-PD sensor
+    # data files *in video time* so that both our segments and device
+    # timestamps use the same time system.
     real_start_times = get_real_start_times(syn)
+    real_video_to_device_offset = get_video_to_device_time_reference(syn)
+    real_timestamps = real_start_times.merge(
+            real_video_to_device_offset, on=["subject_id", "device"], how="outer")
+    real_timestamps = real_timestamps.dropna() # some offsets are null
+    real_timestamps["video_start_time"] = [
+            t+s for t,s in zip(real_timestamps.device_start_time,
+                               real_timestamps.offset)]
+    real_timestamps["video_end_time"] = [
+            t+s for t,s in zip(real_timestamps.device_end_time,
+                               real_timestamps.offset)]
 
 
 #main()
