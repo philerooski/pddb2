@@ -120,9 +120,9 @@ def get_video_to_device_time_reference(syn):
 
 
 #' Handles the special rules that apply to CIS-PD segments
-def segment_cis_pd(smartphone_data, segment_timestamps):
+def segment_cis_pd(sensor_data, segment_timestamps):
     cis_segments = segment_from_start_to_end(
-            sensor_data = smartphone_data,
+            sensor_data = sensor_data,
             reference = segment_timestamps,
             timestamp_col = "Timestamp")
     return(cis_segments)
@@ -338,7 +338,6 @@ def compute_real_segments(syn, subject_ids):
     on_timestamps = on_timestamps.dropna()
     on_timestamps = on_timestamps.drop("date_screening", axis=1)
     on_timestamps["segment_id"] = [str(uuid.uuid4()) for i in range(len(on_timestamps))]
-    on_timestamps = on_timestamps.set_index(["subject_id", "segment_id"])
     on_timestamps["state"] = "on"
     on_timestamps = on_timestamps.set_index(
             ["subject_id", "state", "segment_id"])
@@ -358,7 +357,7 @@ def compute_real_segments(syn, subject_ids):
             {"Record Id": "subject_id"}, axis=1)
     hauser_timestamps["segment_id"] = [str(uuid.uuid4()) for i in range(len(hauser_timestamps))]
     hauser_timestamps = hauser_timestamps.set_index(["subject_id", "segment_id"])
-    return off_on_timestamps, hauser_timestamps
+    return on_off_timestamps, hauser_timestamps
 
 
 def fix_real_pd_datetimes(df, col_to_fix):
@@ -408,14 +407,14 @@ def main():
 
     # CIS-PD
     cis_training_subjects = get_training_subjects(syn, CIS_TRAINING_LABELS)
-    cis_smartphone_data = download_sensor_data(
+    cis_smartwatch_data = download_sensor_data(
             syn,
             table = CIS_SENSOR_DATA,
-            device = "smartphone",
+            device = "smartwatch",
             subject_ids = cis_training_subjects)
     cis_segment_timestamps = compute_cis_segments(syn, cis_training_subjects)
     cis_segments = segment_cis_pd(
-            smartphone_data = cis_smartphone_data,
+            sensor_data = cis_smartwatch_data,
             segment_timestamps = cis_segment_timestamps)
 
     # REAL-PD
