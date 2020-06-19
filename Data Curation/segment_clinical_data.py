@@ -230,6 +230,8 @@ with (at least) columns subject_id and path
 and two datetime columns: start_time and end_time
 `timestamp_col` is the name of the column *in a sensor data file* where
 the time is recorded. E.g., "Timestamp" for CIS-PD sensor data.
+`video_to_device_offset` is index by subject_id, device and has the time offset
+between video and device (see `get_video_to_device_time_reference`)
 """
 def segment_from_center(sensor_data, reference, timestamp_col, video_to_device_offset):
     indices = []
@@ -261,17 +263,23 @@ def segment_from_center(sensor_data, reference, timestamp_col, video_to_device_o
             for _, cols in interval_timestamps.iterrows():
                 interval, timestamp = cols["time_interval"], cols["timestamp"]
                 interval = int(interval[-1])
-                start_time, end_time = (timestamp - pd.DateOffset(minutes = 10),
-                                        timestamp + pd.DateOffset(minutes = 10))
+                if pd.isnull(timestamp):
+                    continue
+                start_time, end_time = (timestamp - (60*10),
+                                        timestamp + (60*10))
                 segment_data = sensor_measurement.loc[start_time:end_time]
                 if segment_data.shape[0]:
                     segment_data = segment_data.reset_index(drop=False)
-                    unique_index = unique_index + (interval, device, measurement)
-                    indices.append(unique_index)
+                    this_index = unique_index + (interval, device, measurement)
+                    indices.append(this_index)
                     segments.append(segment_data)
-    segment_index = pd.MultiIndex.from_tuples(
-            indices,
-            names=["subject_id", "measurement_id", "interval", "device", "measurement"])
+    if len(segments) and len(indices):
+        segment_index = pd.MultiIndex.from_tuples(
+                indices,
+                names=["subject_id", "measurement_id",
+                       "interval", "device", "measurement"])
+    else:
+        segment_index = []
     segment_df = pd.DataFrame({"segments": segments}, index=segment_index)
     return segment_df
 
