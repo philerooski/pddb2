@@ -2,6 +2,7 @@ import synapseclient as sc
 import pandas as pd
 import multiprocessing
 import datetime
+import tempfile
 import uuid
 import pytz
 
@@ -12,6 +13,7 @@ CIS_PD_UPDRS_P3_TABLE = "syn18435297" # start times
 # Table4 Motor Task Timestamps and Scores
 CIS_MOTOR_TASK_TIMESTAMPS = "syn18435302" # end times
 CIS_SENSOR_DATA = "syn22144319"
+CIS_TRAINING_LABELS = "syn21291578"
 
 # REAL-PD
 # Home-based_validation_export_20181129.csv
@@ -28,14 +30,16 @@ HAUSER_DIARY_START_STOP_INTERVALS = [
 VIDEO_TO_DEVICE_TIME = "syn20645722" # indexed by pat_id (subject_id), device
 REAL_UPDATED_WATCH_DATA = "syn21614548"
 REAL_SMARTPHONE_DATA = "syn20542701"
+REAL_TRAINING_LABELS = "syn21292049"
 
 # MISC
-CIS_TRAINING_LABELS = "syn21291578"
-REAL_TRAINING_LABELS = "syn21292049"
-OUTPUT_PROJECT = "syn22152015"
 TESTING = True # limits number of sensor data files downloaded
+OUTPUT_PROJECT = "syn11611056" if TESTING else "syn22152015"
 FRAC_TO_STORE = 1 # limits fraction of segments to upload to Synapse
 NUM_PARALLEL = 2 # number of processes to use when segmenting
+# These are identifiers used internally in the script that help us
+# do some automated actions based on which table we're dealing with.
+TABLE_TYPES = ["cis_segments", "real_updrs_segments", "real_hauser_segments"]
 
 
 def get_training_subjects(syn, training_measurements):
@@ -239,40 +243,29 @@ def segment_from_center(sensor_data, reference, timestamp_col, video_to_device_o
     for i,r in sensor_data.iterrows():
         subject_id, device, measurement, path = \
                 r["subject_id"], r["device"], r["measurement"], r["path"]
-        if video_to_device_offset is not None: # REAL-PD
-            sensor_measurement = align_and_load_sensor_data(
-                    path = path,
-                    timestamp_col = timestamp_col,
-                    subject_id = subject_id,
-                    device = device,
-                    measurement = measurement,
-                    video_to_device_offset = video_to_device_offset)
-            if sensor_measurement.shape[0] == 0:
-                continue
-        else: # CIS-PD
-            sensor_measurement = align_and_load_sensor_data(
-                    path = path,
-                    timestamp_col = timestamp_col)
+        sensor_measurement = align_and_load_sensor_data(
+                path = path,
+                timestamp_col = timestamp_col,
+                subject_id = subject_id,
+                device = device,
+                measurement = measurement,
+                video_to_device_offset = video_to_device_offset)
+        if sensor_measurement.shape[0] == 0:
+            continue
         relevant_segments = reference.query("subject_id == @subject_id")
-        if (relevant_segments.shape[0] == 1):
-            # guaranteed to be unique because there is only one record per subject
-            unique_index = relevant_segments.index[0]
-            interval_timestamps = relevant_segments.melt(
-                    var_name = "time_interval",
-                    value_name = "timestamp")
-            for _, cols in interval_timestamps.iterrows():
-                interval, timestamp = cols["time_interval"], cols["timestamp"]
-                interval = int(interval[-1])
-                if pd.isnull(timestamp):
-                    continue
-                start_time, end_time = (timestamp - (60*10),
-                                        timestamp + (60*10))
-                segment_data = sensor_measurement.loc[start_time:end_time]
-                if segment_data.shape[0]:
-                    segment_data = segment_data.reset_index(drop=False)
-                    this_index = unique_index + (interval, device, measurement)
+        if (relevant_segments.shape[0] == 6): # There are 6 hauser intervals
+            for i, cols in relevant_segments.iterrows():
+                start_time, end_time = cols["start_time"], cols["end_time"]
+                this_index = i + (device, measurement, start_time, end_time)
+                if pd.isnull(start_time) or pd.isnull(end_time):
                     indices.append(this_index)
-                    segments.append(segment_data)
+                    segments.append(None)
+                else:
+                    segment_data = sensor_measurement.loc[start_time:end_time]
+                    if segment_data.shape[0]:
+                        segment_data = segment_data.reset_index(drop=False)
+                        indices.append(this_index)
+                        segments.append(segment_data)
     if len(segments) and len(indices):
         segment_index = pd.MultiIndex.from_tuples(
                 indices,
@@ -330,14 +323,22 @@ def compute_real_segments(syn, subject_ids):
     hauser_timestamps = real_pd_timestamps[
             ["Record Id"] + hauser_time_cols]
     for c in hauser_time_cols:
-        hauser_timestamps = fix_real_pd_datetimes(
-                hauser_timestamps, c)
+        hauser_timestamps = fix_real_pd_datetimes(hauser_timestamps, c)
     hauser_timestamps = hauser_timestamps.dropna(
             subset = hauser_time_cols, how="all")
     hauser_timestamps = hauser_timestamps.rename(
             {"Record Id": "subject_id"}, axis=1)
     hauser_timestamps["measurement_id"] = [
             str(uuid.uuid4()) for i in range(len(hauser_timestamps))]
+    hauser_timestamps = hauser_timestamps.melt(
+            id_vars=["subject_id", "measurement_id"],
+            var_name = "time_interval",
+            value_name = "timestamp")
+    hauser_timestamps["time_interval"] = hauser_timestamps["time_interval"].apply(
+            lambda s : int(s[-1]))
+    hauser_timestamps["start_time"] = hauser_timestamps["timestamp"] - 10*60
+    hauser_timestamps["end_time"] = hauser_timestamps["timestamp"] + 10*60
+    hauser_timestamps = hauser_timestamps.drop("timestamp", axis=1)
     hauser_timestamps = hauser_timestamps.set_index(
             ["subject_id", "measurement_id"])
     return on_off_timestamps, hauser_timestamps
@@ -367,58 +368,61 @@ This column should be called `segment`. Afterwards, reshape the
 dataframe so that device_measurement columns are used (depending
 on the dataset).
 """
-def replace_col_with_filehandles(syn, df, col, upload_in_parallel):
+def replace_col_with_filehandles(syn, df, col, parent, upload_in_parallel):
     if upload_in_parallel:
         mp = multiprocessing.dummy.Pool(4)
         df.loc[:,col] = list(mp.map(
-                lambda df_ : replace_dataframe_with_filehandle(syn, df_),
+                lambda df_ : replace_dataframe_with_filehandle(syn, df_, parent),
                 df[col]))
     else:
         for col in cols:
             df.loc[:,col] = list(map(
-                    lambda df_ : replace_dataframe_with_filehandle(syn, df_),
+                    lambda df_ : replace_dataframe_with_filehandle(syn, df_, parent),
                     df[col]))
 
 
-def replace_dataframe_with_filehandle(syn, df):
+def replace_dataframe_with_filehandle(syn, df, parent):
     if isinstance(df, pd.DataFrame):
         f = tempfile.NamedTemporaryFile(suffix=".csv")
         df.to_csv(f.name, index=False)
-        syn_f = syn.uploadSynapseManagedFileHandle(
-                f.name, mimetype="text/csv")
+        syn_f = syn.uploadFileHandle(
+                path = f.name,
+                parent = parent,
+                mimetype="text/csv")
         f.close()
         return syn_f["id"]
     else:
         return ""
 
 
-# TODO modify to work with this script's tables
-def create_cols(table_type, syn=None):
-    if table_type == MC10_SENSOR_NAME:
+def create_cols(table_type):
+    if table_type == "cis_segments":
         cols = [sc.Column(name="measurement_id", columnType="STRING"),
-                sc.Column(name="sensor_location", columnType="STRING"),
-                sc.Column(name="mc10_accelerometer", columnType="FILEHANDLEID"),
-                sc.Column(name="mc10_gyroscope", columnType="FILEHANDLEID"),
-                sc.Column(name="mc10_emg", columnType="FILEHANDLEID")]
-    elif table_type == SMARTWATCH_SENSOR_NAME:
-        cols = [sc.Column(name="measurement_id", columnType="STRING"),
+                sc.Column(name="subject_id", columnType="STRING"),
+                sc.Column(name="visit", columnType="STRING"),
+                sc.Column(name="start_time", columnType="DATE"),
+                sc.Column(name="end_time", columnType="DATE"),
                 sc.Column(name="smartwatch_accelerometer", columnType="FILEHANDLEID")]
-    elif table_type == "diary":
-        cols = list(syn.getTableColumns(DIARY))
+    elif table_type == "real_updrs_segments":
         cols = [sc.Column(name="measurement_id", columnType="STRING"),
-                sc.Column(name="subject_id", columnType="INTEGER"),
-                sc.Column(name="timestamp", columnType="DATE"),
-                sc.Column(name="activity_intensity", columnType="INTEGER"),
-                sc.Column(name="dyskinesia", columnType="INTEGER"),
-                sc.Column(name="on_off", columnType="INTEGER"),
-                sc.Column(name="tremor", columnType="INTEGER"),
-                sc.Column(name="activity_intensity_reported_timestamp", columnType="DATE"),
-                sc.Column(name="dyskinesia_reported_timestamp", columnType="DATE"),
-                sc.Column(name="on_off_reported_timestamp", columnType="DATE"),
-                sc.Column(name="tremor_reported_timestamp", columnType="DATE")]
+                sc.Column(name="subject_id", columnType="STRING"),
+                sc.Column(name="state", columnType="STRING"),
+                sc.Column(name="start_time", columnType="INTEGER"),
+                sc.Column(name="end_time", columnType="INTEGER"),
+                sc.Column(name="smartphone_accelerometer", columnType="FILEHANDLEID"),
+                sc.Column(name="smartwatch_accelerometer", columnType="FILEHANDLEID"),
+                sc.Column(name="smartwatch_gyroscope", columnType="FILEHANDLEID")]
+    elif table_type == "real_hauser_segments":
+        cols = [sc.Column(name="measurement_id", columnType="STRING"),
+                sc.Column(name="subject_id", columnType="STRING"),
+                sc.Column(name="time_interval", columnType="INTEGER"),
+                sc.Column(name="start_time", columnType="INTEGER"),
+                sc.Column(name="end_time", columnType="INTEGER"),
+                sc.Column(name="smartphone_accelerometer", columnType="FILEHANDLEID"),
+                sc.Column(name="smartwatch_accelerometer", columnType="FILEHANDLEID"),
+                sc.Column(name="smartwatch_gyroscope", columnType="FILEHANDLEID")]
     else:
-        raise TypeError("table_type must be one of [{}, {}, {}]".format(
-            MC10_SENSOR_NAME, SMARTWATCH_SENSOR_NAME, "diary"))
+        raise TypeError(f"table_type must be one of {', '.join(TABLE_TYPES)}")
     return cols
 
 
@@ -439,6 +443,29 @@ def list_append_to_query_str(query_str, col, list_of_things):
         query_str = "{} {}".format(
                 query_str, "AND {} IN {}".format(col, str_of_things))
     return(query_str)
+
+
+"""
+Creating file handles requires a parent. The parent in this case is
+the Synapse table containing segment information and the file handle
+for that segment. We don't have the file handles yet (because we first
+need the parent!) so let's create the parent with a placeholder column
+for the file handles.
+"""
+def store_placeholder_table(syn, df, parent, name, table_type):
+    df = df.reset_index(drop=False) # move index to columns
+    if "segments" in df.columns: # the column we are (temporarily) using for segments
+        df = df.drop("segments", axis=1)
+    table_cols = create_cols(table_type=table_type)
+    for col in table_cols:
+        col_name = col.name
+        if col_name not in df.columns: # create placeholder column
+            df[col_name] = None
+    df = df[[c.name for c in table_cols]]
+    schema = sc.Schema(name = name, columns = table_cols, parent = parent)
+    placeholder_table = sc.Table(schema, df)
+    placeholder_table = syn.store(placeholder_table)
+    return placeholder_table
 
 
 def download_sensor_data(syn, table, device, subject_ids=None, measurements=None):
@@ -469,12 +496,19 @@ def main():
             segment_timestamps = cis_segment_timestamps)
     # shuffle records so that file handle integer contains no useful information
     shuffled_cis_segments = cis_segments.sample(frac=FRAC_TO_STORE)
+    # store a placeholder table for our filehandles
+    cis_table = store_placeholder_table(
+            syn = syn,
+            df = cis_segment_timestamps,
+            parent = OUTPUT_PROJECT,
+            name = "CIS-PD UPDRS Segmented Smartwatch Measurements",
+            table_type = "cis_segments")
     # replace the dataframes with file handles
-    # TODO rename column to 'smartwatch_accelerometer' before calling
     replace_col_with_filehandles( # replaces in-place
             syn,
             df = shuffled_cis_segments,
-            col = "segment",
+            col = "segments",
+            parent = cis_table.schema.id,
             upload_in_parallel = True)
     # make the dataframe look pretty
     # TODO: figure out which cols we want to sort by
