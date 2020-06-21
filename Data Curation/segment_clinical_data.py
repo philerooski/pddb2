@@ -468,6 +468,16 @@ def store_placeholder_table(syn, df, parent, name, table_type):
     return placeholder_table
 
 
+def align_file_handles_with_synapse_table(syn, table_id, file_handle_df):
+    # fetch row id / version
+    synapse_table = syn.tableQuery(f"SELECT * FROM {table_id}").asDataFrame()
+    # get rid of our placeholder columns
+    synapse_table.dropna(axis=1, how="all")
+    file_handle_df = file_handle_df.reset_index(drop=False)
+    synapse_table = synapse_table.merge(file_handle_df)
+    return synapse_table
+
+
 def download_sensor_data(syn, table, device, subject_ids=None, measurements=None):
     query_str = "SELECT * FROM {} WHERE device = '{}'".format(table, device)
     query_str = list_append_to_query_str(query_str, "subject_id", subject_ids)
@@ -510,14 +520,16 @@ def main():
             col = "segments",
             parent = cis_table.schema.id,
             upload_in_parallel = True)
-    # make the dataframe look pretty
+    # re-align our file handes with the placeholder table
+    shuffled_cis_segments = shuffled_cis_segments.rename(
+            {"segments": "smartwatch_accelerometer"}, axis=1)
+    realigned_cis_segments = align_file_handles_with_synapse_table(
+            syn = syn,
+            table_id = cis_table.schema.id,
+            file_handle_df = shuffled_cis_segments)
     # TODO: figure out which cols we want to sort by
-    shuffled_cis_segments.sort_values("measurement_id", inplace=True)
-
-    # backup in case we just created a bajillion file handles but
-    # are rejected during table store
-    shuffled_cis_segments.to_csv("cis_segments_backup.csv", index=False)
-
+    realigned_cis_segments = realigned_cis_segments.sort_values(
+            ["subject_id", "visit"])
     # store to synapse
     # TODO: modify to work with this script (see create_cols)
     shuffled_cis_table = store_dataframe_to_synapse(
