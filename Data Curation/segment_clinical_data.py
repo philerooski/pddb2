@@ -471,15 +471,18 @@ def store_placeholder_table(syn, df, parent, name, table_type):
 def align_file_handles_with_synapse_table(syn, table_id, file_handle_df):
     # fetch row id / version
     synapse_table = syn.tableQuery(f"SELECT * FROM {table_id}").asDataFrame()
-    synapse_table_index = synapse_table.index
     # get rid of our placeholder columns
-    synapse_table.dropna(axis=1, how="all")
+    synapse_table = synapse_table.dropna(axis=1, how="all")
     # move any potential index to columns
     file_handle_df = file_handle_df.reset_index(drop=False)
-    synapse_table = synapse_table.merge(file_handle_df)
+    # cast columns to the same type before merging
+    synapse_table = synapse_table.astype(str)
+    file_handle_df = file_handle_df.astype(str)
+    synapse_table_with_file_handles = synapse_table.merge(file_handle_df)
     # restore original index
-    synapse_table = synapse_table.set_index(synapse_table_index)
-    return synapse_table
+    synapse_table_with_file_handles = synapse_table_with_file_handles.set_index(
+            synapse_table.index)
+    return synapse_table_with_file_handles
 
 
 def download_sensor_data(syn, table, device, subject_ids=None, measurements=None):
