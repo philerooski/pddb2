@@ -400,12 +400,16 @@ def create_cols(table_type):
         cols = [sc.Column(name="measurement_id", columnType="STRING"),
                 sc.Column(name="subject_id", columnType="STRING"),
                 sc.Column(name="visit", columnType="STRING"),
+                sc.Column(name="device", columnType="STRING"),
+                sc.Column(name="measurement", columnType="STRING"),
                 sc.Column(name="start_time", columnType="DATE"),
                 sc.Column(name="end_time", columnType="DATE"),
                 sc.Column(name="smartwatch_accelerometer", columnType="FILEHANDLEID")]
     elif table_type == "real_updrs_segments":
         cols = [sc.Column(name="measurement_id", columnType="STRING"),
                 sc.Column(name="subject_id", columnType="STRING"),
+                sc.Column(name="device", columnType="STRING"),
+                sc.Column(name="measurement", columnType="STRING"),
                 sc.Column(name="state", columnType="STRING"),
                 sc.Column(name="start_time", columnType="INTEGER"),
                 sc.Column(name="end_time", columnType="INTEGER"),
@@ -415,6 +419,8 @@ def create_cols(table_type):
     elif table_type == "real_hauser_segments":
         cols = [sc.Column(name="measurement_id", columnType="STRING"),
                 sc.Column(name="subject_id", columnType="STRING"),
+                sc.Column(name="device", columnType="STRING"),
+                sc.Column(name="measurement", columnType="STRING"),
                 sc.Column(name="time_interval", columnType="INTEGER"),
                 sc.Column(name="start_time", columnType="INTEGER"),
                 sc.Column(name="end_time", columnType="INTEGER"),
