@@ -99,10 +99,19 @@ def get_video_to_device_time_reference(syn):
     return(video_to_device)
 
 
+# This is for CIS-PD which has timestamps objects for timestamps
 def strip_timestamp_from_segment(segment, timestamp_col):
     first_time = segment[timestamp_col].min()
     segment.loc[:,timestamp_col] = segment[timestamp_col].apply(
             lambda t : (t - first_time).total_seconds())
+    return segment
+
+
+# This is for REAL-PD which has integer times
+def normalize_time_in_segment(segment, timestamp_col):
+    first_time = segment[timestamp_col].min()
+    segment.loc[:,timestamp_col] = segment[timestamp_col].apply(
+            lambda t : t - first_time)
     return segment
 
 
@@ -144,10 +153,15 @@ def segment_real_pd(smartphone_data, smartwatch_data, on_off_segment_timestamps,
     on_off_segments = on_off_smartwatch_segments.append(
             other = on_off_smartphone_segments,
             ignore_index = False)
+    on_off_segments.loc[:,"segments"] = \
+            on_off_segments["segments"].apply(normalize_time_in_segment,
+                                              timestamp_col="t")
     hauser_segments = hauser_smartphone_segments.append(
             other = hauser_smartwatch_segments,
             ignore_index = False)
-    # TODO: remove int infor from timestamp
+    hauser_segments.loc[:,"segments"] = \
+            hauser_segments["segments"].apply(normalize_time_in_segment,
+                                              timestamp_col="t")
     return on_off_segments, hauser_segments
 
 
@@ -226,12 +240,15 @@ def segment_from_start_to_end(sensor_data, reference, timestamp_col,
             segment_data = sensor_measurement.loc[start_time:end_time]
             if segment_data.shape[0]:
                 segment_data = segment_data.reset_index(drop=False)
-                index = index + (device, measurement) # for REAL-PD smartwatch
+                this_index = index + (device, measurement) # for REAL-PD smartwatch
                 indices.append(index)
                 segments.append(segment_data)
-    segment_index = pd.MultiIndex.from_tuples(
-            indices,
-            names=["subject_id", "visit", "measurement_id","device", "measurement"])
+    if len(segments) and len(indices):
+        segment_index = pd.MultiIndex.from_tuples(
+                indices,
+                names=list(relevant_segments.index.names)+["device", "measurement"])
+    else: # we didn't find any matching segments in the data!
+        segment_index = []
     segment_df = pd.DataFrame({"segments": segments}, index=segment_index)
     return segment_df
 
@@ -281,8 +298,9 @@ def segment_from_center(sensor_data, reference, timestamp_col, video_to_device_o
     if len(segments) and len(indices):
         segment_index = pd.MultiIndex.from_tuples(
                 indices,
-                names=["subject_id", "measurement_id", "device", "measurement",
-                       "time_interval", "start_time", "end_time"])
+                names=list(relevant_segments.index.names) +
+                      ["device", "measurement", "time_interval",
+                       "start_time", "end_time"])
     else: # we didn't find any matching segments in the data!
         segment_index = []
     segment_df = pd.DataFrame({"segments": segments}, index=segment_index)
@@ -486,6 +504,38 @@ def store_placeholder_table(syn, df, parent, name, table_type):
     return placeholder_table
 
 
+
+# Seriously pandas?! This issue has been open for 1.5+ years?!
+def multiIndex_pivot(df, index = None, columns = None, values = None):
+    # https://github.com/pandas-dev/pandas/issues/23955
+    output_df = df.copy(deep = True)
+    if index is None:
+        names = list(output_df.index.names)
+        output_df = output_df.reset_index()
+    else:
+        names = index
+    output_df = output_df.assign(tuples_index = [tuple(i) for i in output_df[names].values])
+    if isinstance(columns, list):
+        output_df = output_df.assign(tuples_columns = [tuple(i) for i in output_df[columns].values])  # hashable
+        output_df = output_df.pivot(index = 'tuples_index', columns = 'tuples_columns', values = values)
+        output_df.columns = pd.MultiIndex.from_tuples(output_df.columns, names = columns)  # reduced
+    else:
+        output_df = output_df.pivot(index = 'tuples_index', columns = columns, values = values)
+    output_df.index = pd.MultiIndex.from_tuples(output_df.index, names = names)
+    return output_df
+
+
+# This is for REAL-PD, which has multiple sensor recordings for each measurement
+# for both UPDRS and Hauser.
+def move_device_and_measurement_to_cols(df):
+    df = df.reset_index(["device", "measurement"], drop=False)
+    df["col_names"] = [f"{i.lower()}_{j.lower()}"
+                       for i, j in zip(df.device, df.measurement)]
+    df = df.drop(["device", "measurement"], axis=1)
+    df = multiIndex_pivot(df, index=None, columns="col_names", values="segments")
+    return(df)
+
+
 def align_file_handles_with_synapse_table(syn, table_id, file_handle_df):
     # fetch row id / version
     synapse_table = syn.tableQuery(f"SELECT * FROM {table_id}").asDataFrame()
@@ -551,13 +601,16 @@ def main():
             col = "segments",
             parent = cis_table.schema.id,
             upload_in_parallel = True)
-    # re-align our file handes with the placeholder table
+    # put our dataframe in the same format as the placeholder table
     shuffled_cis_segments = shuffled_cis_segments.rename(
             {"segments": "smartwatch_accelerometer"}, axis=1)
+    # re-align our file handes with the placeholder table
     realigned_cis_segments = align_file_handles_with_synapse_table(
             syn = syn,
             table_id = cis_table.schema.id,
             file_handle_df = shuffled_cis_segments)
+    # backup before storing in case Synapse is feeling moody
+    realigned_cis_segments.to_csv("cis_backup.csv", index=True)
     # store to synapse
     syn.store(sc.Table(cis_table.schema.id, realigned_cis_segments))
 
@@ -593,29 +646,51 @@ def main():
     shuffled_on_off_segments = real_on_off_segments.sample(frac=FRAC_TO_STORE)
     shuffled_hauser_segments = real_hauser_segments.sample(frac=FRAC_TO_STORE)
     # store a placeholder table for our filehandles
-    real_updrs_table = store_placeholder_table(
+    real_on_off_table = store_placeholder_table(
             syn = syn,
-            df = cis_segment_timestamps,
+            df = real_on_off_segment_timestamps,
             parent = OUTPUT_PROJECT,
-            name = "CIS-PD UPDRS Segmented Smartwatch Measurements",
-            table_type = "cis_segments")
+            name = "REAL-PD UPDRS Segmented Smartphone and Smartwatch Measurements",
+            table_type = "real_updrs_segments")
+    real_hauser_table = store_placeholder_table(
+            syn = syn,
+            df = real_hauser_interval_timestamps,
+            parent = OUTPUT_PROJECT,
+            name = "REAL-PD Hauser Diary Segmented Smartphone and Smartwatch Measurements",
+            table_type = "real_hauser_segments")
     # replace the dataframes with file handles
     replace_col_with_filehandles( # replaces in-place
             syn,
-            df = shuffled_cis_segments,
+            df = shuffled_on_off_segments,
             col = "segments",
-            parent = cis_table.schema.id,
+            parent = real_on_off_table.schema.id,
             upload_in_parallel = True)
+    replace_col_with_filehandles( # replaces in-place
+            syn,
+            df = shuffled_hauser_segments,
+            col = "segments",
+            parent = real_hauser_table.schema.id,
+            upload_in_parallel = True)
+    # put our dataframes in the same format as the placeholder table
+    shuffled_on_off_segments = move_device_and_measurement_to_cols(
+            shuffled_on_off_segments)
+    shuffled_hauser_segments = move_device_and_measurement_to_cols(
+            shuffled_hauser_segments)
     # re-align our file handes with the placeholder table
-    shuffled_cis_segments = shuffled_cis_segments.rename(
-            {"segments": "smartwatch_accelerometer"}, axis=1)
-    realigned_cis_segments = align_file_handles_with_synapse_table(
+    realigned_on_off_segments = align_file_handles_with_synapse_table(
             syn = syn,
-            table_id = cis_table.schema.id,
-            file_handle_df = shuffled_cis_segments)
+            table_id = real_on_off_table.schema.id,
+            file_handle_df = shuffled_on_off_segments)
+    realigned_on_off_segments = align_file_handles_with_synapse_table(
+            syn = syn,
+            table_id = real_hauser_table.schema.id,
+            file_handle_df = shuffled_hauser_segments)
+    # backup before storing in case Synapse is feeling moody
+    realigned_on_off_segments.to_csv("real_on_off_backup.csv", index=True)
+    realigned_hauser_segments.to_csv("real_hauser_backup.csv", index=True)
     # store to synapse
-    syn.store(sc.Table(cis_table.schema.id, realigned_cis_segments))
-
+    syn.store(sc.Table(real_on_off_table.schema.id, realigned_on_off_segments))
+    syn.store(sc.Table(real_hauser_table.schema.id, realigned_hauser_segments))
 
 
 #main()
