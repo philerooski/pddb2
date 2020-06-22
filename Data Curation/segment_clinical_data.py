@@ -113,7 +113,8 @@ def segment_cis_pd(sensor_data, segment_timestamps):
             reference = segment_timestamps,
             timestamp_col = "Timestamp")
     cis_segments.loc[:,"segments"] = \
-            cis_segments["segments"].apply(strip_timestamp_from_segment)
+            cis_segments["segments"].apply(strip_timestamp_from_segment,
+                                           timestamp_col="Timestamp")
     return(cis_segments)
 
 
@@ -265,7 +266,8 @@ def segment_from_center(sensor_data, reference, timestamp_col, video_to_device_o
         if (relevant_segments.shape[0] == 6): # There are 6 hauser intervals
             for i, cols in relevant_segments.iterrows():
                 start_time, end_time = cols["start_time"], cols["end_time"]
-                this_index = i + (device, measurement, start_time, end_time)
+                this_index = i + (device, measurement, cols["time_interval"],
+                                  start_time, end_time)
                 if pd.isnull(start_time) or pd.isnull(end_time):
                     indices.append(this_index)
                     segments.append(None)
@@ -278,9 +280,9 @@ def segment_from_center(sensor_data, reference, timestamp_col, video_to_device_o
     if len(segments) and len(indices):
         segment_index = pd.MultiIndex.from_tuples(
                 indices,
-                names=["subject_id", "measurement_id",
-                       "interval", "device", "measurement"])
-    else:
+                names=["subject_id", "measurement_id", "device", "measurement",
+                       "time_interval", "start_time", "end_time"])
+    else: # we didn't find any matching segments in the data!
         segment_index = []
     segment_df = pd.DataFrame({"segments": segments}, index=segment_index)
     return segment_df
@@ -581,8 +583,32 @@ def main():
         on_off_segment_timestamps = real_on_off_segment_timestamps,
         hauser_interval_timestamps = real_hauser_interval_timestamps,
         video_to_device_offset = real_video_to_device_offset)
-    # TODO store segments to Synapse as annotated files (or as table file handles
-    # using earlier code?)
+    # shuffle records so that file handle integer contains no useful information
+    shuffled_on_off_segments = real_on_off_segments.sample(frac=FRAC_TO_STORE)
+    shuffled_hauser_segments = real_hauser_segments.sample(frac=FRAC_TO_STORE)
+    # store a placeholder table for our filehandles
+    real_updrs_table = store_placeholder_table(
+            syn = syn,
+            df = cis_segment_timestamps,
+            parent = OUTPUT_PROJECT,
+            name = "CIS-PD UPDRS Segmented Smartwatch Measurements",
+            table_type = "cis_segments")
+    # replace the dataframes with file handles
+    replace_col_with_filehandles( # replaces in-place
+            syn,
+            df = shuffled_cis_segments,
+            col = "segments",
+            parent = cis_table.schema.id,
+            upload_in_parallel = True)
+    # re-align our file handes with the placeholder table
+    shuffled_cis_segments = shuffled_cis_segments.rename(
+            {"segments": "smartwatch_accelerometer"}, axis=1)
+    realigned_cis_segments = align_file_handles_with_synapse_table(
+            syn = syn,
+            table_id = cis_table.schema.id,
+            file_handle_df = shuffled_cis_segments)
+    # store to synapse
+    syn.store(sc.Table(cis_table.schema.id, realigned_cis_segments))
 
 
 
