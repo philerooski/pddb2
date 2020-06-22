@@ -483,8 +483,8 @@ def align_file_handles_with_synapse_table(syn, table_id, file_handle_df):
     index_subset = synapse_table.index[
             [i in synapse_table_with_file_handles.measurement_id.values
              for i in synapse_table.measurement_id.values]]
-    synapse_table_with_file_handles = synapse_table_with_file_handles.set_index(
-            synapse_table.index)
+    synapse_table_with_file_handles = \
+            synapse_table_with_file_handles.set_index(index_subset)
     return synapse_table_with_file_handles
 
 
