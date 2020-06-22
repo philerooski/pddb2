@@ -480,6 +480,9 @@ def align_file_handles_with_synapse_table(syn, table_id, file_handle_df):
     file_handle_df = file_handle_df.astype(str)
     synapse_table_with_file_handles = synapse_table.merge(file_handle_df)
     # restore original index
+    index_subset = synapse_table.index[
+            [i in synapse_table_with_file_handles.measurement_id.values
+             for i in synapse_table.measurement_id.values]]
     synapse_table_with_file_handles = synapse_table_with_file_handles.set_index(
             synapse_table.index)
     return synapse_table_with_file_handles
@@ -534,17 +537,8 @@ def main():
             syn = syn,
             table_id = cis_table.schema.id,
             file_handle_df = shuffled_cis_segments)
-    # TODO: figure out which cols we want to sort by
-    realigned_cis_segments = realigned_cis_segments.sort_values(
-            ["subject_id", "visit"])
     # store to synapse
-    # TODO: modify to work with this script (see create_cols)
-    shuffled_cis_table = store_dataframe_to_synapse(
-            syn,
-            df = shuffled_cis_segments,
-            parent = OUTPUT_PROJECT,
-            name = "CIS-PD Segmented Smartwatch UPDRS Data",
-            cols = create_cols(MC10_SENSOR_NAME))
+    syn.store(sc.Table(cis_table.schema.id, realigned_cis_segments))
 
     # REAL-PD
     real_training_subjects = get_training_subjects(syn, REAL_TRAINING_LABELS)
