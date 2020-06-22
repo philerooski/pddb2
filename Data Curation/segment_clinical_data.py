@@ -147,6 +147,7 @@ def segment_real_pd(smartphone_data, smartwatch_data, on_off_segment_timestamps,
     hauser_segments = hauser_smartphone_segments.append(
             other = hauser_smartwatch_segments,
             ignore_index = False)
+    # TODO: remove int infor from timestamp
     return on_off_segments, hauser_segments
 
 
@@ -505,10 +506,13 @@ def align_file_handles_with_synapse_table(syn, table_id, file_handle_df):
     return synapse_table_with_file_handles
 
 
-def download_sensor_data(syn, table, device, subject_ids=None, measurements=None):
+def download_sensor_data(syn, table, device, subject_ids=None, measurements=None,
+                         context=None):
     query_str = "SELECT * FROM {} WHERE device = '{}'".format(table, device)
     query_str = list_append_to_query_str(query_str, "subject_id", subject_ids)
     query_str = list_append_to_query_str(query_str, "measurement", measurements)
+    if context is not None:
+        query_str = f"{query_str} AND context='{context}'"
     if TESTING:
         query_str = "{} {}".format(query_str, "LIMIT 2")
     print(query_str)
@@ -564,13 +568,15 @@ def main():
             table = REAL_UPDATED_WATCH_DATA,
             device = "Smartwatch",
             subject_ids = real_training_subjects,
-            measurements = ["accelerometer", "gyroscope"])
+            measurements = ["accelerometer", "gyroscope"],
+            context = "home_visit")
     real_smartphone_data = download_sensor_data(
             syn,
             table = REAL_SMARTPHONE_DATA,
             device = "Smartphone",
             subject_ids = real_training_subjects,
-            measurements = ["accelerometer"])
+            measurements = ["accelerometer"],
+            context = "home_visit")
     real_on_off_segment_timestamps, real_hauser_interval_timestamps = \
             compute_real_segments(syn, real_training_subjects)
     # As our 'gold standard' for sensor_data timestamps we are using
