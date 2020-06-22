@@ -99,12 +99,21 @@ def get_video_to_device_time_reference(syn):
     return(video_to_device)
 
 
+def strip_timestamp_from_segment(segment, timestamp_col):
+    first_time = segment[timestamp_col].min()
+    segment.loc[:,timestamp_col] = segment[timestamp_col].apply(
+            lambda t : (t - first_time).total_seconds())
+    return segment
+
+
 #' Handles the special rules that apply to CIS-PD segments
 def segment_cis_pd(sensor_data, segment_timestamps):
     cis_segments = segment_from_start_to_end(
             sensor_data = sensor_data,
             reference = segment_timestamps,
             timestamp_col = "Timestamp")
+    cis_segments.loc[:,"segments"] = \
+            cis_segments["segments"].apply(strip_timestamp_from_segment)
     return(cis_segments)
 
 
