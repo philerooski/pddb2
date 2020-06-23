@@ -548,12 +548,12 @@ def align_file_handles_with_synapse_table(syn, table_id, file_handle_df):
     # move any potential index to columns
     file_handle_df = file_handle_df.reset_index(drop=False)
     # cast columns to the same type before merging, handle hauser specific issue
-    if "time_interval" in file_handle_df.columns:
-            file_handle_df.loc[:,"time_interval"] = \
-                    file_handle_df["time_interval"].astype(int).astype(str)
+    if "time_interval" in file_handle_df.columns: # hauser
+        file_handle_df.loc[:,"time_interval"] = \
+                file_handle_df["time_interval"].astype(int).astype(str)
+        # we will restore these when we merge
+        synapse_table = synapse_table.drop(["start_time", "end_time"], axis=1)
     synapse_table = synapse_table.astype(str)
-    # we will restore these when we merge
-    synapse_table = synapse_table.drop(["start_time", "end_time"], axis=1)
     file_handle_df = file_handle_df.astype(str)
     file_handle_df.columns.name = None # fix bug from pivot_multiIndex function
     # merge across specific shared columns
@@ -705,13 +705,13 @@ def main():
             syn = syn,
             table_id = real_hauser_table.schema.id,
             file_handle_df = shuffled_hauser_segments)
+    # cast these to int so that Synapse doesn't throw a fit
+    for c in ["start_time", "end_time"]:
+        realigned_hauser_segments.loc[:,c] = realigned_hauser_segments[c].astype(float).astype(int)
     # Replace null file handle values (which are strings at this point)
     for c in ["smartphone_accelerometer", "smartwatch_accelerometer", "smartwatch_gyroscope"]:
-        realigned_on_off_segments.loc[:,c] = \
-                realigned_on_off_segments[c].replace({"nan": ""})
-        realigned_hauser_segments.loc[:,c] = \
-                realigned_hauser_segments[c].replace({"nan": ""})
-
+        realigned_on_off_segments.loc[:,c] = realigned_on_off_segments[c].replace({"nan": ""})
+        realigned_hauser_segments.loc[:,c] = realigned_hauser_segments[c].replace({"nan": ""})
     # backup before storing in case Synapse is feeling moody
     realigned_on_off_segments.to_csv("real_on_off_backup.csv", index=True)
     realigned_hauser_segments.to_csv("real_hauser_backup.csv", index=True)
