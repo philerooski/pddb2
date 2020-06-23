@@ -707,11 +707,13 @@ def main():
             file_handle_df = shuffled_hauser_segments)
     # cast these to int so that Synapse doesn't throw a fit
     for c in ["start_time", "end_time"]:
-        realigned_hauser_segments.loc[:,c] = realigned_hauser_segments[c].astype(float).astype(int)
+        realigned_hauser_segments[c] = realigned_hauser_segments[c].astype(float).astype(int)
+
     # Replace null file handle values (which are strings at this point)
     for c in ["smartphone_accelerometer", "smartwatch_accelerometer", "smartwatch_gyroscope"]:
-        realigned_on_off_segments.loc[:,c] = realigned_on_off_segments[c].replace({"nan": ""})
-        realigned_hauser_segments.loc[:,c] = realigned_hauser_segments[c].replace({"nan": ""})
+        realigned_on_off_segments[c] = realigned_on_off_segments[c].replace({"nan": ""})
+        realigned_hauser_segments[c] = realigned_hauser_segments[c].replace({"nan": ""})
+
     # backup before storing in case Synapse is feeling moody
     realigned_on_off_segments.to_csv("real_on_off_backup.csv", index=True)
     realigned_hauser_segments.to_csv("real_hauser_backup.csv", index=True)
