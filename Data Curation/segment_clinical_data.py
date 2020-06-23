@@ -548,11 +548,25 @@ def align_file_handles_with_synapse_table(syn, table_id, file_handle_df):
     # move any potential index to columns
     file_handle_df = file_handle_df.reset_index(drop=False)
     # cast columns to the same type before merging, handle hauser specific issue
-    for c in ["start_time", "end_time", "time_interval"]:
-        if c in file_handle_df.columns:
-            file_handle_df.loc[:,c] = file_handle_df[c].astype(int).astype(str)
-    # merge across all shared columns (be careful about the dtype!)
-    synapse_table_with_file_handles = synapse_table.merge(file_handle_df)
+    if "time_interval" in file_handle_df.columns:
+            file_handle_df.loc[:,"time_interval"] = \
+                    file_handle_df["time_interval"].astype(int).astype(str)
+    synapse_table = synapse_table.astype(str)
+    # we will restore these when we merge
+    synapse_table = synapse_table.drop(["start_time", "end_time"], axis=1)
+    file_handle_df = file_handle_df.astype(str)
+    file_handle_df.columns.name = None # fix bug from pivot_multiIndex function
+    # merge across specific shared columns
+    if "time_interval" in file_handle_df.columns:
+        synapse_table_with_file_handles = synapse_table.merge(
+                file_handle_df,
+                on=["measurement_id", "time_interval", "subject_id"])
+    elif "state" in file_handle_df.columns:
+        synapse_table_with_file_handles = synapse_table.merge(
+                file_handle_df,
+                on=["measurement_id", "subject_id", "state"])
+    else: # CIS-PD
+        synapse_table_with_file_handles = synapse_table.merge(file_handle_df)
     # restore original index
     index_subset = synapse_table.index[
             [i in synapse_table_with_file_handles.measurement_id.values
