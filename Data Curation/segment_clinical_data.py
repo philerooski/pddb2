@@ -109,6 +109,9 @@ def strip_timestamp_from_segment(segment, timestamp_col):
 
 # This is for REAL-PD which has integer times
 def normalize_time_in_segment(segment, timestamp_col):
+    # some of our hauser segments are null
+    if not isinstance(segment, pd.DataFrame) and pd.isnull(segment):
+        return segment
     first_time = segment[timestamp_col].min()
     segment.loc[:,timestamp_col] = segment[timestamp_col].apply(
             lambda t : t - first_time)
@@ -241,7 +244,7 @@ def segment_from_start_to_end(sensor_data, reference, timestamp_col,
             if segment_data.shape[0]:
                 segment_data = segment_data.reset_index(drop=False)
                 this_index = index + (device, measurement) # for REAL-PD smartwatch
-                indices.append(index)
+                indices.append(this_index)
                 segments.append(segment_data)
     if len(segments) and len(indices):
         segment_index = pd.MultiIndex.from_tuples(
@@ -438,8 +441,6 @@ def create_cols(table_type):
     elif table_type == "real_updrs_segments":
         cols = [sc.Column(name="measurement_id", columnType="STRING"),
                 sc.Column(name="subject_id", columnType="STRING"),
-                sc.Column(name="device", columnType="STRING"),
-                sc.Column(name="measurement", columnType="STRING"),
                 sc.Column(name="state", columnType="STRING"),
                 sc.Column(name="start_time", columnType="INTEGER"),
                 sc.Column(name="end_time", columnType="INTEGER"),
@@ -449,8 +450,6 @@ def create_cols(table_type):
     elif table_type == "real_hauser_segments":
         cols = [sc.Column(name="measurement_id", columnType="STRING"),
                 sc.Column(name="subject_id", columnType="STRING"),
-                sc.Column(name="device", columnType="STRING"),
-                sc.Column(name="measurement", columnType="STRING"),
                 sc.Column(name="time_interval", columnType="INTEGER"),
                 sc.Column(name="start_time", columnType="INTEGER"),
                 sc.Column(name="end_time", columnType="INTEGER"),
@@ -681,7 +680,7 @@ def main():
             syn = syn,
             table_id = real_on_off_table.schema.id,
             file_handle_df = shuffled_on_off_segments)
-    realigned_on_off_segments = align_file_handles_with_synapse_table(
+    realigned_hauser_segments = align_file_handles_with_synapse_table(
             syn = syn,
             table_id = real_hauser_table.schema.id,
             file_handle_df = shuffled_hauser_segments)
