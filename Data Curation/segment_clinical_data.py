@@ -162,6 +162,11 @@ def segment_real_pd(smartphone_data, smartwatch_data, on_off_segment_timestamps,
     hauser_segments = hauser_smartphone_segments.append(
             other = hauser_smartwatch_segments,
             ignore_index = False)
+    # This will drop null (missing) start_time and end_time values.
+    # I initially considered keeping these (explicit missingingness is better
+    # than implicit) but they caused too many issues for pandas downstream.
+    # And we can add the index back in later if needed.
+    hauser_segments = hauser_segments.dropna(axis='index')
     hauser_segments.loc[:,"segments"] = \
             hauser_segments["segments"].apply(normalize_time_in_segment,
                                               timestamp_col="t")
@@ -361,12 +366,12 @@ def compute_real_segments(syn, subject_ids):
             subset = hauser_time_cols, how="all")
     hauser_timestamps = hauser_timestamps.rename(
             {"Record Id": "subject_id"}, axis=1)
-    hauser_timestamps["measurement_id"] = [
-            str(uuid.uuid4()) for i in range(len(hauser_timestamps))]
     hauser_timestamps = hauser_timestamps.melt(
-            id_vars=["subject_id", "measurement_id"],
+            id_vars= "subject_id",
             var_name = "time_interval",
             value_name = "timestamp")
+    hauser_timestamps["measurement_id"] = [
+            str(uuid.uuid4()) for i in range(len(hauser_timestamps))]
     hauser_timestamps["time_interval"] = hauser_timestamps["time_interval"].apply(
             lambda s : int(s[-1]))
     hauser_timestamps["start_time"] = hauser_timestamps["timestamp"] - 10*60
@@ -425,7 +430,7 @@ def replace_dataframe_with_filehandle(syn, df, parent):
         f.close()
         return syn_f["id"]
     else:
-        return None
+        return ""
 
 
 def create_cols(table_type):
@@ -543,17 +548,11 @@ def align_file_handles_with_synapse_table(syn, table_id, file_handle_df):
     # move any potential index to columns
     file_handle_df = file_handle_df.reset_index(drop=False)
     # cast columns to the same type before merging, handle hauser specific issue
-    if "time_interval" in file_handle_df:
-        file_handle_df[:,"time_interval"] = \
-                file_handle_df.time_interval.astype(int).astype(str)
-    synapse_table = synapse_table.astype(str)
-    file_handle_df = file_handle_df.astype(str)
-    if "time_interval" in file_handle_df: # Hauser
-        synapse_table_with_file_handles = synapse_table.merge(
-                file_handle_df, on=["measurement_id", "time_interval"])
-    else: # CIS-PD and REAL-PD UPDRS
-        synapse_table_with_file_handles = synapse_table.merge(
-                file_handle_df, on=["measurement_id"])
+    for c in ["start_time", "end_time", "time_interval"]:
+        if c in file_handle_df.columns:
+            file_handle_df.loc[:,c] = file_handle_df[c].astype(int).astype(str)
+    # merge across all shared columns (be careful about the dtype!)
+    synapse_table_with_file_handles = synapse_table.merge(file_handle_df)
     # restore original index
     index_subset = synapse_table.index[
             [i in synapse_table_with_file_handles.measurement_id.values
@@ -698,6 +697,7 @@ def main():
                 realigned_on_off_segments[c].replace({"nan": ""})
         realigned_hauser_segments.loc[:,c] = \
                 realigned_hauser_segments[c].replace({"nan": ""})
+
     # backup before storing in case Synapse is feeling moody
     realigned_on_off_segments.to_csv("real_on_off_backup.csv", index=True)
     realigned_hauser_segments.to_csv("real_hauser_backup.csv", index=True)
