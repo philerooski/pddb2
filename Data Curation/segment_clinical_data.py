@@ -425,7 +425,7 @@ def replace_dataframe_with_filehandle(syn, df, parent):
         f.close()
         return syn_f["id"]
     else:
-        return ""
+        return None
 
 
 def create_cols(table_type):
@@ -684,6 +684,12 @@ def main():
             syn = syn,
             table_id = real_hauser_table.schema.id,
             file_handle_df = shuffled_hauser_segments)
+    # Replace null file handle values
+    for c in ["smartphone_accelerometer",
+              "smartwatch_accelerometer",
+              "smartwatch_gyroscope"]:
+        realigned_on_off_segments.loc[:,c] = realigned_on_off_segments[c].fillna("")
+        realigned_hauser_segments.loc[:,c] = realigned_hauser_segments[c].fillna("")
     # backup before storing in case Synapse is feeling moody
     realigned_on_off_segments.to_csv("real_on_off_backup.csv", index=True)
     realigned_hauser_segments.to_csv("real_hauser_backup.csv", index=True)
