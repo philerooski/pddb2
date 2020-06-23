@@ -292,8 +292,7 @@ def segment_from_center(sensor_data, reference, timestamp_col, video_to_device_o
         if (relevant_segments.shape[0] == 6): # There are 6 hauser intervals
             for i, cols in relevant_segments.iterrows():
                 start_time, end_time = cols["start_time"], cols["end_time"]
-                this_index = i + (device, measurement, cols["time_interval"],
-                                  start_time, end_time)
+                this_index = i + (device, measurement, start_time, end_time)
                 if pd.isnull(start_time) or pd.isnull(end_time):
                     indices.append(this_index)
                     segments.append(None)
@@ -307,8 +306,7 @@ def segment_from_center(sensor_data, reference, timestamp_col, video_to_device_o
         segment_index = pd.MultiIndex.from_tuples(
                 indices,
                 names=list(relevant_segments.index.names) +
-                      ["device", "measurement", "time_interval",
-                       "start_time", "end_time"])
+                      ["device", "measurement", "start_time", "end_time"])
     else: # we didn't find any matching segments in the data!
         segment_index = []
     segment_df = pd.DataFrame({"segments": segments}, index=segment_index)
@@ -378,7 +376,7 @@ def compute_real_segments(syn, subject_ids):
     hauser_timestamps["end_time"] = hauser_timestamps["timestamp"] + 10*60
     hauser_timestamps = hauser_timestamps.drop("timestamp", axis=1)
     hauser_timestamps = hauser_timestamps.set_index(
-            ["subject_id", "measurement_id"])
+            ["subject_id", "measurement_id", "time_interval"])
     return on_off_timestamps, hauser_timestamps
 
 
@@ -590,7 +588,6 @@ def download_sensor_data(syn, table, device, subject_ids=None, measurements=None
     sensor_data["path"] = [syn.get(i).path for i in sensor_data.id]
     return sensor_data
 
-
 def main():
     syn = sc.login()
 
@@ -650,6 +647,12 @@ def main():
             subject_ids = real_training_subjects,
             measurements = ["accelerometer"],
             context = "home_visit")
+    # Smartphone data has duplicates
+    real_smartphone_data = real_smartphone_data.set_index(
+            ["subject_id", "context", "device", "measurement"])
+    real_smartphone_data = real_smartphone_data[
+            ~real_smartphone_data.index.duplicated()]
+    real_smartphone_data = real_smartphone_data.reset_index(drop=False)
     real_on_off_segment_timestamps, real_hauser_interval_timestamps = \
             compute_real_segments(syn, real_training_subjects)
     # As our 'gold standard' for sensor_data timestamps we are using
